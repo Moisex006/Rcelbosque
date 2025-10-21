@@ -1,0 +1,1 @@
+import { openDb } from '../db/db.js';import fs from 'fs';const db=await openDb();const sql=fs.readFileSync('db/schema.sql','utf8');await db.exec(sql);console.log('Migración aplicada ✅');process.exit(0);

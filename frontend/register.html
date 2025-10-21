@@ -1,0 +1,64 @@
+
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgroGan - Registro</title>
+
+<style>
+:root{--brand:#21a35b;}
+body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;color:#222;background:#fff;}
+.nav{display:flex;gap:1rem;align-items:center;padding:1rem 2rem;border-bottom:1px solid #eee;background:#fff;position:sticky;top:0;}
+.nav a{color:#111;text-decoration:none;font-weight:600;}
+.container{max-width:1100px;margin:0 auto;padding:1rem;}
+.hero{display:grid;grid-template-columns:1.2fr 1fr;gap:2rem;align-items:center;padding:3rem 0;}
+.hero h1{font-size:clamp(2rem,4vw,3rem);margin:0;}
+.card{border:1px solid #eee;border-radius:16px;padding:1rem;box-shadow:0 2px 10px rgba(0,0,0,.03);background:#fff;}
+.btn{background:var(--brand);color:white;border:none;padding:.7rem 1.1rem;border-radius:12px;cursor:pointer;font-weight:600;}
+input,select{padding:.6rem;border-radius:10px;border:1px solid #ccc;width:100%;}
+table{width:100%;border-collapse:collapse;} th,td{padding:.6rem;border-bottom:1px solid #eee;text-align:left;}
+.grid{display:grid;gap:1rem;}
+.grid-2{grid-template-columns:repeat(2,1fr);} .grid-3{grid-template-columns:repeat(3,1fr);} .grid-4{grid-template-columns:repeat(4,1fr);}
+.badge{display:inline-block;background:#eef7f1;color:#0b6a38;padding:.2rem .5rem;border-radius:999px;font-size:.8rem;}
+small.muted{color:#666;}
+</style>
+
+</head><body>
+<nav class="nav">
+  <a href="index.html">AgroGan</a>
+  <a href="catalogo.html">Catálogo</a>
+  <a href="login.html">Login</a>
+  <a href="register.html">Registro</a>
+  <a href="admin.html">Admin</a>
+</nav>
+<div class="container">
+  <div class="card">
+    <h2>Crear cuenta</h2>
+    <div class="grid grid-3">
+      <label>Nombre <input id="name" required></label>
+      <label>Email <input id="email" type="email" required></label>
+      <label>Contraseña <input id="password" type="password" required></label>
+    </div>
+    <div style="margin-top:1rem;"><button class="btn" onclick="registerUser()">Registrarme</button></div>
+  </div>
+</div>
+
+<script>
+const API = localStorage.getItem('API_URL') || 'http://localhost:3000';
+function setApiUrl(url){ localStorage.setItem('API_URL', url); document.querySelectorAll('.currentApi').forEach(e=>e.textContent=url); }
+function getToken(){ return localStorage.getItem('token') || ''; }
+function setToken(t){ localStorage.setItem('token', t); }
+function clearToken(){ localStorage.removeItem('token'); }
+function authHeaders(extra={}){ return Object.assign({'Authorization':'Bearer '+getToken()}, extra); }
+async function me(){ if(!getToken()) return null; try{ const r=await fetch(API+'/api/auth/me',{headers:authHeaders()}); if(!r.ok) return null; return (await r.json()).user; }catch(e){ return null; } }
+</script>
+
+<script>
+async function registerUser(){
+  const name = document.getElementById('name').value;
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const r = await fetch(API+'/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
+  const j = await r.json();
+  if(!r.ok){ alert(j.error || (j.errors && j.errors[0]?.msg) || 'Error'); return; }
+  setToken(j.token); alert('Cuenta creada'); location.href = 'admin.html';
+}
+</script>
+</body></html>

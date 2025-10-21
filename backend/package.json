@@ -1,0 +1,26 @@
+{
+  "name": "agrogan-backend",
+  "version": "2.0.0",
+  "description": "AgroGan API: auth + roles + animal catalog (public/private)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "seed:admin": "node scripts/seed-admin.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.12",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-validator": "^7.0.1",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.6"
+  }
+}
