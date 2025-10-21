@@ -8,7 +8,7 @@ $prices = getMarketPrices();
 <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="assets/style.css">
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-<title>RC El Bosque - Venta de Ganado Premium</title>
+<title>RC El Bosque - Venta de Ganado Brahman</title>
 <style>
 /* Estilos específicos para la landing page */
 :root {
@@ -310,27 +310,6 @@ $prices = getMarketPrices();
           Cabezas Disponibles
         </span>
       </div>
-      <div class="metric-card animate-fade-in">
-        <span class="metric-number" data-target="<?= $stats['sales'] ?>">0</span>
-        <span class="metric-label">
-          <i class="fas fa-handshake"></i><br>
-          Animales Vendidos
-        </span>
-      </div>
-      <div class="metric-card animate-fade-in">
-        <span class="metric-number" data-target="<?= $stats['satisfaction'] ?>">0%</span>
-        <span class="metric-label">
-          <i class="fas fa-star"></i><br>
-          Clientes Satisfechos
-        </span>
-      </div>
-      <div class="metric-card animate-fade-in">
-        <span class="metric-number" data-target="<?= $stats['revenue'] ?>">$0M</span>
-        <span class="metric-label">
-          <i class="fas fa-dollar-sign"></i><br>
-          En Transacciones
-        </span>
-      </div>
     </div>
   </div>
 </section>
@@ -553,75 +532,6 @@ $prices = getMarketPrices();
   </div>
 </section>
 
-<!-- Testimonios -->
-<section class="section" style="background: white;">
-  <div class="container">
-    <h2 class="section-title">
-      <i class="fas fa-quote-left"></i> Casos de Éxito
-    </h2>
-    <p class="section-subtitle">Historias reales de ganaderos que transformaron sus operaciones</p>
-    
-    <div class="grid grid-3">
-      <div class="testimonial">
-        <div style="text-align: center; margin-bottom: 1rem;">
-          <div style="width: 80px; height: 80px; background: var(--accent-green); border-radius: 50%; margin: 0 auto; display: flex; align-items: center; justify-content: center;">
-            <i class="fas fa-user-tie" style="font-size: 2rem; color: white;"></i>
-          </div>
-        </div>
-        <p class="testimonial-text">
-          "Compré 15 novillas Holstein a través de AgroGan. Excelente calidad genética y toda la documentación 
-          en orden. El proceso fue transparente y la entrega puntual. Totalmente recomendado."
-        </p>
-        <div class="testimonial-author">
-          Carlos Mendoza<br>
-          <small>Finca La Esperanza, Antioquia</small><br>
-          <div style="color: #ffc107; margin-top: 0.5rem;">
-            <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
-          </div>
-        </div>
-      </div>
-      
-      <div class="testimonial">
-        <div style="text-align: center; margin-bottom: 1rem;">
-          <div style="width: 80px; height: 80px; background: var(--accent-green); border-radius: 50%; margin: 0 auto; display: flex; align-items: center; justify-content: center;">
-            <i class="fas fa-user-circle" style="font-size: 2rem; color: white;"></i>
-          </div>
-        </div>
-        <p class="testimonial-text">
-          "Encontré exactamente lo que buscaba: un reproductor Brahman con excelente genética. 
-          La información detallada me ayudó a tomar la mejor decisión para mi hato."
-        </p>
-        <div class="testimonial-author">
-          Roberto Jiménez<br>
-          <small>Hacienda El Progreso, Meta</small><br>
-          <div style="color: #ffc107; margin-top: 0.5rem;">
-            <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
-          </div>
-        </div>
-      </div>
-      
-      <div class="testimonial">
-        <div style="text-align: center; margin-bottom: 1rem;">
-          <div style="width: 80px; height: 80px; background: var(--accent-green); border-radius: 50%; margin: 0 auto; display: flex; align-items: center; justify-content: center;">
-            <i class="fas fa-female" style="font-size: 2rem; color: white;"></i>
-          </div>
-        </div>
-        <p class="testimonial-text">
-          "Como compradora frecuente, valoro la transparencia de AgroGan. Las fotos, videos y certificaciones 
-          me dan la confianza necesaria para comprar sin necesidad de visitas presenciales."
-        </p>
-        <div class="testimonial-author">
-          Ana Patricia Ruiz<br>
-          <small>Inversora Ganadera, Córdoba</small><br>
-          <div style="color: #ffc107; margin-top: 0.5rem;">
-            <i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i><i class="fas fa-star"></i>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- CTA Final -->
 <section class="section" style="background: linear-gradient(135deg, var(--primary-green), var(--accent-green)); color: white;">
   <div class="container" style="text-align: center;">
@@ -647,7 +557,7 @@ $prices = getMarketPrices();
     <div class="grid grid-3">
       <div>
         <h4 style="display:flex;align-items:center;gap:.7rem;"><img src="assets/images/logo-rc-el-bosque.png" alt="Logo RC El Bosque" style="height:32px;width:auto;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.08);"> RC El Bosque</h4>
-        <p>Catálogo especializado en venta de ganado premium. Los mejores ejemplares bovinos de Colombia al alcance de un clic.</p>
+        <p>Catálogo especializado en venta de ganado Brahman. Los mejores ejemplares bovinos de Colombia al alcance de un clic.</p>
         <div style="margin-top: 1rem;">
           <i class="fab fa-facebook" style="margin-right: 1rem; font-size: 1.5rem;"></i>
           <i class="fab fa-instagram" style="margin-right: 1rem; font-size: 1.5rem;"></i>
