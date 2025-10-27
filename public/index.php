@@ -558,11 +558,6 @@ $prices = getMarketPrices();
       <div>
         <h4 style="display:flex;align-items:center;gap:.7rem;"><img src="assets/images/logo-rc-el-bosque.png" alt="Logo RC El Bosque" style="height:32px;width:auto;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.08);"> RC El Bosque</h4>
         <p>Catálogo especializado en venta de ganado Brahman. Los mejores ejemplares bovinos de Colombia al alcance de un clic.</p>
-        <div style="margin-top: 1rem;">
-          <i class="fab fa-facebook" style="margin-right: 1rem; font-size: 1.5rem;"></i>
-          <i class="fab fa-instagram" style="margin-right: 1rem; font-size: 1.5rem;"></i>
-          <i class="fab fa-twitter" style="margin-right: 1rem; font-size: 1.5rem;"></i>
-        </div>
       </div>
       <div>
         <h4>Contacto</h4>

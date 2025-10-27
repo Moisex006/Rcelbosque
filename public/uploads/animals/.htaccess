@@ -1,0 +1,13 @@
+# Permitir acceso a imágenes
+<FilesMatch "\.(jpg|jpeg|png|gif|webp)$">
+    Require all granted
+</FilesMatch>
+
+# Denegar acceso a otros archivos
+<FilesMatch "\.(php|php3|php4|php5|phtml|pl|py|jsp|asp|sh|cgi)$">
+    Require all denied
+</FilesMatch>
+
+# Configuración de seguridad
+Options -Indexes
+ServerSignature Off

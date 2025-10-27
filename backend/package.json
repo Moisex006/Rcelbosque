@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "migrate": "node scripts/migrate.js",
+    "migrate:veterinary": "node scripts/migrate-veterinary.js",
     "seed": "node scripts/seed.js",
     "seed:admin": "node scripts/seed-admin.js"
   },

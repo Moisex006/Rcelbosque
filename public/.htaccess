@@ -1,0 +1,8 @@
+# Configuración básica para permitir acceso a imágenes
+<FilesMatch "\.(jpg|jpeg|png|gif|webp|svg)$">
+    Require all granted
+</FilesMatch>
+
+# Configuración de seguridad
+Options -Indexes
+ServerSignature Off
