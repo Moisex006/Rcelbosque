@@ -384,6 +384,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['flash_ok'] = 'Usuario eliminado exitosamente';
         break;
         
+      case 'add_farm':
+        $stmt = $pdo->prepare("INSERT INTO farms (name, location) VALUES (?, ?)");
+        $stmt->execute([
+          $_POST['name'],
+          !empty($_POST['location']) ? $_POST['location'] : null
+        ]);
+        $_SESSION['flash_ok'] = 'Finca creada exitosamente';
+        break;
+        
+      case 'edit_farm':
+        $stmt = $pdo->prepare("UPDATE farms SET name=?, location=? WHERE id=?");
+        $stmt->execute([
+          $_POST['name'],
+          !empty($_POST['location']) ? $_POST['location'] : null,
+          $_POST['farm_id']
+        ]);
+        $_SESSION['flash_ok'] = 'Finca actualizada exitosamente';
+        break;
+        
+      case 'delete_farm':
+        $stmt = $pdo->prepare("DELETE FROM farms WHERE id = ?");
+        $stmt->execute([$_POST['farm_id']]);
+        $_SESSION['flash_ok'] = 'Finca eliminada exitosamente';
+        break;
+        
       case 'toggle_catalog_animal':
         // Si es admin_finca, crear postulación en lugar de agregar directamente
         if (is_admin_finca()) {
@@ -1267,7 +1292,7 @@ if (isset($_GET['edit_user'])) {
             Cerrar Sesión
           </a>
         </div>
-      </nav>
+</nav>
     </aside>
 
     <!-- Main Content -->
@@ -1378,19 +1403,19 @@ if (isset($_GET['edit_user'])) {
         <div id="animals-section" class="content-section">
           <div class="admin-card">
             <h3><i class="fas fa-plus-circle"></i> <?= $editAnimal ? 'Editar Animal' : 'Registrar Nuevo Animal' ?></h3>
-            <?php if ($editAnimal): ?>
+      <?php if ($editAnimal): ?>
               <div style="margin-bottom: 1rem;">
                 <a href="admin.php" class="btn btn-secondary">
                   <i class="fas fa-arrow-left"></i> Cancelar Edición
                 </a>
-              </div>
-            <?php endif; ?>
+        </div>
+      <?php endif; ?>
             
             <form method="POST" class="form-grid" enctype="multipart/form-data">
               <input type="hidden" name="action" value="<?= $editAnimal ? 'edit_animal' : 'add_animal' ?>">
-              <?php if ($editAnimal): ?>
+        <?php if ($editAnimal): ?>
                 <input type="hidden" name="animal_id" value="<?= $editAnimal['id'] ?>">
-              <?php endif; ?>
+        <?php endif; ?>
               
               <div class="form-group">
                 <label for="name">Nombre del Animal *</label>
@@ -1429,7 +1454,7 @@ if (isset($_GET['edit_user'])) {
                   <option value="macho" <?= ($editAnimal['gender'] ?? '') == 'macho' ? 'selected' : '' ?>>Macho</option>
                   <option value="hembra" <?= ($editAnimal['gender'] ?? '') == 'hembra' ? 'selected' : '' ?>>Hembra</option>
                   <option value="indefinido" <?= ($editAnimal['gender'] ?? '') == 'indefinido' ? 'selected' : '' ?>>Indefinido</option>
-                </select>
+          </select>
               </div>
               
               <div class="form-group">
@@ -1463,7 +1488,7 @@ if (isset($_GET['edit_user'])) {
                   <?php else: ?>
                     Postular para el catálogo
                   <?php endif; ?>
-                </label>
+        </label>
               </div>
               
               <div class="form-group" style="grid-column: 1 / -1;">
@@ -1482,8 +1507,8 @@ if (isset($_GET['edit_user'])) {
                 <button type="submit" class="btn btn-primary">
                   <i class="fas fa-save"></i> <?= $editAnimal ? 'Actualizar Animal' : 'Registrar Animal' ?>
                 </button>
-              </div>
-            </form>
+        </div>
+      </form>
             
             <?php if ($editAnimal): ?>
             <!-- Photo Upload Section -->
@@ -1500,8 +1525,8 @@ if (isset($_GET['edit_user'])) {
                   <label for="photos">Seleccionar Fotos (máximo 5)</label>
                   <input type="file" id="photos" name="photos[]" multiple accept="image/*" required>
                   <small style="color: var(--gray-500);">Formatos permitidos: JPG, PNG, GIF, WebP. Máximo 5MB por archivo.</small>
-                </div>
-                
+    </div>
+
                 <div class="form-group">
                   <label for="photos_description">Descripción de las fotos (opcional)</label>
                   <textarea id="photos_description" name="photos_description" rows="2" placeholder="Descripción general para todas las fotos subidas"></textarea>
@@ -1587,7 +1612,7 @@ if (isset($_GET['edit_user'])) {
                   <th>Acciones</th>
                 </tr>
               </thead>
-              <tbody>
+        <tbody>
                 <?php foreach ($animals as $animal): ?>
                   <tr>
                     <td><?= $animal['id'] ?></td>
@@ -1597,9 +1622,9 @@ if (isset($_GET['edit_user'])) {
                     <td>
                       <?php if ($animal['in_cat']): ?>
                         <span style="color: var(--success);"><i class="fas fa-check"></i> Sí</span>
-                      <?php else: ?>
+                <?php else: ?>
                         <span style="color: var(--gray-400);"><i class="fas fa-times"></i> No</span>
-                      <?php endif; ?>
+                <?php endif; ?>
                     </td>
                     <td>
                       <a href="admin.php?edit_animal=<?= $animal['id'] ?>" class="btn btn-sm btn-secondary">
@@ -1617,7 +1642,7 @@ if (isset($_GET['edit_user'])) {
                 <?php endforeach; ?>
               </tbody>
             </table>
-          </div>
+              </div>
         </div>
 
         <!-- Catalog Section -->
@@ -1703,11 +1728,11 @@ if (isset($_GET['edit_user'])) {
                       <a href="admin.php?edit_animal=<?= $animal['id'] ?>" class="btn btn-sm btn-secondary">
                         <i class="fas fa-edit"></i> Editar
                       </a>
-                    </td>
-                  </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
             
             <!-- Bulk Actions -->
             <?php if (is_admin_general()): ?>
@@ -1725,7 +1750,7 @@ if (isset($_GET['edit_user'])) {
                 <button class="btn btn-sm" onclick="clearSelection()">
                   <i class="fas fa-times"></i> Limpiar Selección
                 </button>
-              </div>
+    </div>
             </div>
             <?php else: ?>
             <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--gray-200);">
@@ -1830,7 +1855,7 @@ if (isset($_GET['edit_user'])) {
                   <th>Acciones</th>
                 </tr>
               </thead>
-              <tbody>
+        <tbody>
                 <?php foreach ($lots as $lot): ?>
                   <tr>
                     <td><?= $lot['id'] ?></td>
@@ -1944,7 +1969,7 @@ if (isset($_GET['edit_user'])) {
                   <i class="fas fa-save"></i> <?= $editUser ? 'Actualizar Usuario' : 'Crear Usuario' ?>
                 </button>
               </div>
-            </form>
+              </form>
           </div>
           
           <div class="admin-card">
@@ -1993,11 +2018,101 @@ if (isset($_GET['edit_user'])) {
                           </button>
                         </form>
                       <?php endif; ?>
-                    </td>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+        <!-- Farms Section -->
+        <div id="farms-section" class="content-section">
+          <?php 
+          // Obtener fincas
+          $stmt = $pdo->query("SELECT * FROM farms ORDER BY name");
+          $allFarms = $stmt->fetchAll();
+          
+          // Variables para edición
+          $editFarm = null;
+          if (isset($_GET['edit_farm'])) {
+            $editStmt = $pdo->prepare("SELECT * FROM farms WHERE id = ?");
+            $editStmt->execute([$_GET['edit_farm']]);
+            $editFarm = $editStmt->fetch();
+          }
+          ?>
+          
+          <div class="admin-card">
+            <h3><i class="fas fa-plus-circle"></i> <?= $editFarm ? 'Editar Finca' : 'Registrar Nueva Finca' ?></h3>
+            <?php if ($editFarm): ?>
+              <div style="margin-bottom: 1rem;">
+                <a href="admin.php" class="btn btn-secondary">
+                  <i class="fas fa-arrow-left"></i> Cancelar Edición
+                </a>
+</div>
+            <?php endif; ?>
+            
+            <form method="POST" class="form-grid">
+              <input type="hidden" name="action" value="<?= $editFarm ? 'edit_farm' : 'add_farm' ?>">
+              <?php if ($editFarm): ?>
+                <input type="hidden" name="farm_id" value="<?= $editFarm['id'] ?>">
+              <?php endif; ?>
+              
+              <div class="form-group">
+                <label for="farm_name">Nombre de la Finca *</label>
+                <input type="text" id="farm_name" name="name" value="<?= e($editFarm['name'] ?? '') ?>" required>
+              </div>
+              
+              <div class="form-group">
+                <label for="farm_location">Ubicación</label>
+                <input type="text" id="farm_location" name="location" value="<?= e($editFarm['location'] ?? '') ?>" placeholder="Ciudad, Departamento">
+              </div>
+              
+              <div class="form-group" style="grid-column: 1 / -1;">
+                <button type="submit" class="btn btn-primary">
+                  <i class="fas fa-save"></i> <?= $editFarm ? 'Actualizar Finca' : 'Crear Finca' ?>
+                </button>
+              </div>
+            </form>
+          </div>
+          
+          <div class="admin-card">
+            <h3><i class="fas fa-list"></i> Lista de Fincas</h3>
+            <?php if (empty($allFarms)): ?>
+              <p style="color: var(--gray-600); text-align: center; padding: 2rem;">No hay fincas registradas</p>
+            <?php else: ?>
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Nombre</th>
+                    <th>Ubicación</th>
+                    <th>Acciones</th>
                   </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <?php foreach ($allFarms as $farm): ?>
+                    <tr>
+                      <td><?= $farm['id'] ?></td>
+                      <td><?= e($farm['name']) ?></td>
+                      <td><?= e($farm['location'] ?? 'No especificada') ?></td>
+                      <td>
+                        <a href="?edit_farm=<?= $farm['id'] ?>" class="btn btn-sm btn-secondary">
+                          <i class="fas fa-edit"></i> Editar
+                        </a>
+                        <form method="POST" style="display: inline;" onsubmit="return confirm('¿Estás seguro de eliminar esta finca? Los animales asociados no se eliminarán, pero perderán la relación con la finca.')">
+                          <input type="hidden" name="action" value="delete_farm">
+                          <input type="hidden" name="farm_id" value="<?= $farm['id'] ?>">
+                          <button type="submit" class="btn btn-sm btn-danger">
+                            <i class="fas fa-trash"></i> Eliminar
+                          </button>
+                        </form>
+                      </td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            <?php endif; ?>
           </div>
         </div>
 
@@ -2384,7 +2499,10 @@ if (isset($_GET['edit_user'])) {
         'dashboard': 'Dashboard',
         'animals': 'Gestión de Animales',
         'catalog': 'Catálogo',
+        'lots': 'Gestión de Lotes',
         'users': 'Usuarios',
+        'farms': 'Gestión de Fincas',
+        'nominations': 'Postulaciones',
         'veterinary': 'Módulo Veterinario',
         'reports': 'Reportes',
         'settings': 'Configuración'
