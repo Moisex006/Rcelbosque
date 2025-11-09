@@ -1,9 +1,38 @@
+-- Rc El Bosque MySQL schema
+-- Orden corregido: tablas base primero, luego tablas con foreign keys
+-- 
+-- IMPORTANTE: Este archivo está diseñado para ejecutarse en Hostinger
+-- La base de datos u919054360_rcelbosque ya debe estar creada
+-- Selecciona la base de datos en phpMyAdmin antes de ejecutar este script
+--
+-- NOTA: En Hostinger, NO tienes permisos para crear bases de datos
+-- Solo puedes usar la base de datos que ya creaste: u919054360_rcelbosque
 
--- AgroGan MySQL schema
-SET NAMES utf8mb4;
-CREATE DATABASE IF NOT EXISTS agrogan CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-USE agrogan;
+-- Deshabilitar temporalmente las verificaciones de foreign keys para evitar errores durante la creación
+SET FOREIGN_KEY_CHECKS = 0;
 
+-- ============================================
+-- TABLAS BASE (Sin dependencias)
+-- ============================================
+
+-- Tabla de especies (debe crearse primero)
+CREATE TABLE IF NOT EXISTS species (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(80) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+-- Tabla de fincas (debe crearse antes que users)
+CREATE TABLE IF NOT EXISTS farms (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  location VARCHAR(180)
+) ENGINE=InnoDB;
+
+-- ============================================
+-- TABLAS CON DEPENDENCIAS
+-- ============================================
+
+-- Tabla de usuarios (depende de farms)
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(120) NOT NULL UNIQUE,
@@ -15,11 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
   FOREIGN KEY (farm_id) REFERENCES farms(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
-CREATE TABLE IF NOT EXISTS species (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(80) NOT NULL UNIQUE
-) ENGINE=InnoDB;
-
+-- Tabla de razas (depende de species)
 CREATE TABLE IF NOT EXISTS breeds (
   id INT AUTO_INCREMENT PRIMARY KEY,
   species_id INT NOT NULL,
@@ -28,12 +53,7 @@ CREATE TABLE IF NOT EXISTS breeds (
   FOREIGN KEY (species_id) REFERENCES species(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
-CREATE TABLE IF NOT EXISTS farms (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  location VARCHAR(180)
-) ENGINE=InnoDB;
-
+-- Tabla de animales (depende de species, breeds, farms, y animals - auto-referencia)
 CREATE TABLE IF NOT EXISTS animals (
   id INT AUTO_INCREMENT PRIMARY KEY,
   tag_code VARCHAR(80) NOT NULL UNIQUE,
@@ -47,19 +67,19 @@ CREATE TABLE IF NOT EXISTS animals (
   status VARCHAR(40) NOT NULL DEFAULT 'activo',
   sire_id INT NULL,
   dam_id INT NULL,
-  weight DECIMAL(6,2) NULL COMMENT 'Peso del animal en kg',
+  weight DECIMAL(6,2) NULL COMMENT 'Peso del animal en kg (20-1000kg)',
   description TEXT NULL COMMENT 'Descripción del animal',
   in_cat TINYINT(1) DEFAULT 0 COMMENT 'Indica si el animal está visible en el catálogo público',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (species_id) REFERENCES species(id),
   FOREIGN KEY (breed_id) REFERENCES breeds(id),
-  FOREIGN KEY (farm_id) REFERENCES farms(id),
+  FOREIGN KEY (farm_id) REFERENCES farms(id) ON DELETE SET NULL,
   FOREIGN KEY (sire_id) REFERENCES animals(id),
   FOREIGN KEY (dam_id) REFERENCES animals(id)
 ) ENGINE=InnoDB;
 
--- Tabla para lotes de animales
+-- Tabla para lotes de animales (depende de farms y users)
 CREATE TABLE IF NOT EXISTS lots (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(200) NOT NULL COMMENT 'Nombre del lote',
@@ -72,11 +92,11 @@ CREATE TABLE IF NOT EXISTS lots (
   created_by INT NOT NULL COMMENT 'Usuario que creó el lote',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (farm_id) REFERENCES farms(id),
+  FOREIGN KEY (farm_id) REFERENCES farms(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
--- Tabla de relación lotes-animales
+-- Tabla de relación lotes-animales (depende de lots y animals)
 CREATE TABLE IF NOT EXISTS lot_animals (
   id INT AUTO_INCREMENT PRIMARY KEY,
   lot_id INT NOT NULL COMMENT 'ID del lote',
@@ -87,7 +107,7 @@ CREATE TABLE IF NOT EXISTS lot_animals (
   UNIQUE KEY unique_lot_animal (lot_id, animal_id)
 ) ENGINE=InnoDB;
 
--- Tabla para fotos de animales
+-- Tabla para fotos de animales (depende de animals)
 CREATE TABLE IF NOT EXISTS animal_photos (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL COMMENT 'ID del animal',
@@ -104,6 +124,7 @@ CREATE TABLE IF NOT EXISTS animal_photos (
   INDEX idx_animal_photos (animal_id, sort_order)
 ) ENGINE=InnoDB;
 
+-- Tabla de pesos históricos (depende de animals)
 CREATE TABLE IF NOT EXISTS animal_weights (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -112,6 +133,7 @@ CREATE TABLE IF NOT EXISTS animal_weights (
   FOREIGN KEY (animal_id) REFERENCES animals(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Tabla de vacunaciones (depende de animals)
 CREATE TABLE IF NOT EXISTS animal_vaccinations (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -121,6 +143,7 @@ CREATE TABLE IF NOT EXISTS animal_vaccinations (
   FOREIGN KEY (animal_id) REFERENCES animals(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Tabla de fotos (legacy, depende de animals)
 CREATE TABLE IF NOT EXISTS photos (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -129,6 +152,7 @@ CREATE TABLE IF NOT EXISTS photos (
   FOREIGN KEY (animal_id) REFERENCES animals(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- Tabla de items del catálogo (depende de animals)
 CREATE TABLE IF NOT EXISTS catalog_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL UNIQUE,
@@ -137,7 +161,7 @@ CREATE TABLE IF NOT EXISTS catalog_items (
   FOREIGN KEY (animal_id) REFERENCES animals(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Tabla para postulaciones al catálogo
+-- Tabla para postulaciones al catálogo (depende de users y farms)
 CREATE TABLE IF NOT EXISTS nominations (
   id INT AUTO_INCREMENT PRIMARY KEY,
   item_type ENUM('animal','lot') NOT NULL COMMENT 'Tipo de item postulado',
@@ -151,12 +175,16 @@ CREATE TABLE IF NOT EXISTS nominations (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (proposed_by) REFERENCES users(id),
   FOREIGN KEY (reviewed_by) REFERENCES users(id),
-  FOREIGN KEY (farm_id) REFERENCES farms(id),
+  FOREIGN KEY (farm_id) REFERENCES farms(id) ON DELETE SET NULL,
   INDEX idx_status (status),
   INDEX idx_item (item_type, item_id)
 ) ENGINE=InnoDB;
 
--- RF5: Tablas para tratamientos veterinarios
+-- ============================================
+-- MÓDULO VETERINARIO
+-- ============================================
+
+-- Tabla de veterinarios (sin dependencias)
 CREATE TABLE IF NOT EXISTS veterinarians (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -167,6 +195,7 @@ CREATE TABLE IF NOT EXISTS veterinarians (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
+-- Tabla de medicamentos (sin dependencias)
 CREATE TABLE IF NOT EXISTS medications (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -179,6 +208,7 @@ CREATE TABLE IF NOT EXISTS medications (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
+-- Tabla de tratamientos (depende de animals y veterinarians)
 CREATE TABLE IF NOT EXISTS treatments (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -200,6 +230,7 @@ CREATE TABLE IF NOT EXISTS treatments (
   FOREIGN KEY (veterinarian_id) REFERENCES veterinarians(id)
 ) ENGINE=InnoDB;
 
+-- Tabla de relación tratamientos-medicamentos (depende de treatments y medications)
 CREATE TABLE IF NOT EXISTS treatment_medications (
   id INT AUTO_INCREMENT PRIMARY KEY,
   treatment_id INT NOT NULL,
@@ -212,7 +243,7 @@ CREATE TABLE IF NOT EXISTS treatment_medications (
   FOREIGN KEY (medication_id) REFERENCES medications(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- RF6: Tablas para alertas sanitarias
+-- Tabla de alertas sanitarias (depende de animals y users)
 CREATE TABLE IF NOT EXISTS health_alerts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT,
@@ -230,6 +261,7 @@ CREATE TABLE IF NOT EXISTS health_alerts (
   FOREIGN KEY (resolved_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
+-- Tabla de cuarentenas (depende de animals y veterinarians)
 CREATE TABLE IF NOT EXISTS quarantines (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -246,7 +278,7 @@ CREATE TABLE IF NOT EXISTS quarantines (
   FOREIGN KEY (veterinarian_id) REFERENCES veterinarians(id)
 ) ENGINE=InnoDB;
 
--- RF7: Tablas para reportes sanitarios
+-- Tabla de reportes sanitarios (depende de animals, farms y users)
 CREATE TABLE IF NOT EXISTS health_reports (
   id INT AUTO_INCREMENT PRIMARY KEY,
   report_type ENUM('individual','lote','general','sanitario','reproductivo','nutricional') NOT NULL,
@@ -263,10 +295,11 @@ CREATE TABLE IF NOT EXISTS health_reports (
   status ENUM('borrador','finalizado','archivado') DEFAULT 'borrador',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (animal_id) REFERENCES animals(id) ON DELETE CASCADE,
-  FOREIGN KEY (farm_id) REFERENCES farms(id),
+  FOREIGN KEY (farm_id) REFERENCES farms(id) ON DELETE SET NULL,
   FOREIGN KEY (generated_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
+-- Tabla de métricas de salud (depende de animals y veterinarians)
 CREATE TABLE IF NOT EXISTS health_metrics (
   id INT AUTO_INCREMENT PRIMARY KEY,
   animal_id INT NOT NULL,
@@ -283,15 +316,72 @@ CREATE TABLE IF NOT EXISTS health_metrics (
   FOREIGN KEY (veterinarian_id) REFERENCES veterinarians(id)
 ) ENGINE=InnoDB;
 
--- Seeds
+-- Tabla de cotizaciones (depende de animals, lots y users)
+CREATE TABLE IF NOT EXISTS quotes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  item_type ENUM('animal', 'lot') NOT NULL,
+  item_id INT NOT NULL,
+  customer_name VARCHAR(120) NOT NULL,
+  customer_email VARCHAR(120) NOT NULL,
+  customer_phone VARCHAR(20) NOT NULL,
+  customer_message TEXT,
+  status ENUM('pendiente', 'en_proceso', 'respondida') NOT NULL DEFAULT 'pendiente',
+  created_by INT COMMENT 'Usuario que creó la cotización (si estaba logueado)',
+  updated_by INT COMMENT 'Usuario que actualizó el estado',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Tabla de imágenes del carrusel principal
+CREATE TABLE IF NOT EXISTS carousel_images (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  filename VARCHAR(255) NOT NULL,
+  file_path VARCHAR(500) NOT NULL,
+  title VARCHAR(200) COMMENT 'Título que aparece en el carrusel',
+  description TEXT COMMENT 'Descripción que aparece debajo del título',
+  sort_order INT DEFAULT 0 COMMENT 'Orden de visualización (menor número = primero)',
+  is_active TINYINT(1) DEFAULT 1 COMMENT 'Si está activa (1) o no (0)',
+  created_by INT COMMENT 'Usuario que creó la imagen',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- Tabla de recuperación de contraseñas
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  expires_at TIMESTAMP NOT NULL,
+  used TINYINT(1) DEFAULT 0 COMMENT 'Si el token ya fue usado (1) o no (0)',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX idx_token (token),
+  INDEX idx_expires_at (expires_at)
+) ENGINE=InnoDB;
+
+-- Reactivar verificaciones de foreign keys
+SET FOREIGN_KEY_CHECKS = 1;
+
+-- ============================================
+-- DATOS INICIALES (SEEDS)
+-- ============================================
+
+-- Especies
 INSERT IGNORE INTO species(name) VALUES ('Bovino'), ('Porcino'), ('Ovino');
+
+-- Razas
 SET @bovino := (SELECT id FROM species WHERE name='Bovino' LIMIT 1);
 INSERT IGNORE INTO breeds(species_id, name) VALUES (@bovino, 'Brahman'), (@bovino, 'Holstein');
+
+-- Fincas
 INSERT IGNORE INTO farms(name, location) VALUES ('Finca La Esperanza','Antioquia'), ('Finca El Roble','Cundinamarca');
 
--- Admin por defecto: email admin@agrogan.local / password admin123
+-- Admin por defecto: email admin@rcelbosque.local / password admin123
 INSERT IGNORE INTO users(email, password_hash, name, role)
-VALUES ('admin@agrogan.local', '$2y$10$Tknbs5U0wVw1kC2oZg2n5eYx3eAFQ0Zb0EwWmHkQ6tlJc3lZ.4pVO', 'Administrador', 'admin_general');
+VALUES ('admin@rcelbosque.local', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Administrador', 'admin_general');
 
 -- Datos de ejemplo para veterinarios
 INSERT IGNORE INTO veterinarians(name, license_number, phone, email, specialization) VALUES
@@ -306,3 +396,4 @@ INSERT IGNORE INTO medications(name, active_ingredient, dosage_form, concentrati
 ('Ivermectina', 'Ivermectina', 'inyeccion', '1%', 'AgroVet', '2025-09-15'),
 ('Vitamina B12', 'Cianocobalamina', 'inyeccion', '1000mcg/ml', 'NutriVet', '2025-03-20'),
 ('Antiinflamatorio', 'Meloxicam', 'oral', '15mg', 'MediVet', '2025-08-10');
+

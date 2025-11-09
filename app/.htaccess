@@ -1,0 +1,9 @@
+# Proteger carpeta app/
+# Denegar acceso directo a todos los archivos PHP en app/
+
+Order deny,allow
+Deny from all
+
+# Permitir acceso solo desde localhost (para includes)
+# Esto previene acceso directo pero permite includes desde otros archivos PHP
+

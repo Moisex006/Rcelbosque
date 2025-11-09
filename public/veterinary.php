@@ -11,8 +11,15 @@ $totalAnimals = $pdo->query("SELECT COUNT(*) FROM animals")->fetchColumn();
 $totalUsers = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
 $animalsInCatalog = $pdo->query("SELECT COUNT(*) FROM catalog_items WHERE visible = 1")->fetchColumn();
 
-// Obtener animales para los selects
-$animals = $pdo->query("SELECT id, tag_code, name FROM animals ORDER BY tag_code")->fetchAll(PDO::FETCH_ASSOC);
+// Obtener animales para los selects con información completa
+$animals = $pdo->query("
+  SELECT a.id, a.tag_code, a.name, a.gender,
+         s.name as species_name, b.name as breed_name
+  FROM animals a
+  LEFT JOIN species s ON s.id = a.species_id
+  LEFT JOIN breeds b ON b.id = a.breed_id
+  ORDER BY a.tag_code
+")->fetchAll(PDO::FETCH_ASSOC);
 
 // Verificar si las tablas veterinarias existen, si no, crearlas
 try {
@@ -123,8 +130,8 @@ try {
     ");
 }
 
-// Obtener veterinarios
-$veterinarians = $pdo->query("SELECT id, name FROM veterinarians ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+// Obtener veterinarios (solo para mostrar en listados)
+$veterinarians = $pdo->query("SELECT id, name, email FROM veterinarians ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
 
 // Obtener medicamentos
 $medications = $pdo->query("SELECT id, name, active_ingredient, dosage_form, concentration, manufacturer, expiration_date FROM medications ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
@@ -170,6 +177,32 @@ if ($_POST) {
         switch ($_POST['action']) {
             case 'create_treatment':
                 try {
+                    // Validar que animal_id esté presente
+                    if (empty($_POST['animal_id'])) {
+                        throw new Exception('Debe seleccionar un animal para el tratamiento');
+                    }
+                    
+                    // Obtener o crear el veterinario del usuario logueado
+                    $veterinarianId = null;
+                    if ($user) {
+                        $userName = trim($user['name'] ?? '');
+                        $userEmail = trim($user['email'] ?? '');
+                        
+                        // Buscar veterinario existente
+                        $stmtVet = $pdo->prepare("SELECT id FROM veterinarians WHERE LOWER(TRIM(name)) = LOWER(?) OR (email IS NOT NULL AND LOWER(TRIM(email)) = LOWER(?))");
+                        $stmtVet->execute([$userName, $userEmail]);
+                        $vet = $stmtVet->fetch();
+                        
+                        if ($vet) {
+                            $veterinarianId = $vet['id'];
+                        } else if (!empty($userName)) {
+                            // Crear veterinario si no existe
+                            $stmtCreate = $pdo->prepare("INSERT INTO veterinarians (name, email) VALUES (?, ?)");
+                            $stmtCreate->execute([$userName, $userEmail ?: null]);
+                            $veterinarianId = $pdo->lastInsertId();
+                        }
+                    }
+                    
                     $stmt = $pdo->prepare("
                         INSERT INTO treatments (
                             animal_id, veterinarian_id, treatment_date, treatment_type, 
@@ -180,17 +213,17 @@ if ($_POST) {
                     
                     $stmt->execute([
                         $_POST['animal_id'],
-                        $_POST['veterinarian_id'] ?: null,
+                        $veterinarianId,
                         $_POST['treatment_date'],
                         $_POST['treatment_type'],
-                        $_POST['diagnosis'] ?: null,
-                        $_POST['symptoms'] ?: null,
+                        $_POST['diagnosis'] ?? null,
+                        $_POST['symptoms'] ?? null,
                         $_POST['treatment_description'],
-                        $_POST['dosage'] ?: null,
-                        $_POST['duration_days'] ?: null,
-                        $_POST['cost'] ?: null,
-                        $_POST['follow_up_date'] ?: null,
-                        $_POST['notes'] ?: null
+                        $_POST['dosage'] ?? null,
+                        $_POST['duration_days'] ?? null,
+                        $_POST['cost'] ?? null,
+                        $_POST['follow_up_date'] ?? null,
+                        $_POST['notes'] ?? null
                     ]);
                     
                     $_SESSION['flash_message'] = 'Tratamiento registrado exitosamente';
@@ -205,6 +238,27 @@ if ($_POST) {
                 
             case 'create_quarantine':
                 try {
+                    // Obtener o crear el veterinario del usuario logueado
+                    $veterinarianId = null;
+                    if ($user) {
+                        $userName = trim($user['name'] ?? '');
+                        $userEmail = trim($user['email'] ?? '');
+                        
+                        // Buscar veterinario existente
+                        $stmtVet = $pdo->prepare("SELECT id FROM veterinarians WHERE LOWER(TRIM(name)) = LOWER(?) OR (email IS NOT NULL AND LOWER(TRIM(email)) = LOWER(?))");
+                        $stmtVet->execute([$userName, $userEmail]);
+                        $vet = $stmtVet->fetch();
+                        
+                        if ($vet) {
+                            $veterinarianId = $vet['id'];
+                        } else if (!empty($userName)) {
+                            // Crear veterinario si no existe
+                            $stmtCreate = $pdo->prepare("INSERT INTO veterinarians (name, email) VALUES (?, ?)");
+                            $stmtCreate->execute([$userName, $userEmail ?: null]);
+                            $veterinarianId = $pdo->lastInsertId();
+                        }
+                    }
+                    
                     $stmt = $pdo->prepare("
                         INSERT INTO quarantines (
                             animal_id, start_date, end_date, reason, location, 
@@ -219,7 +273,7 @@ if ($_POST) {
                         $_POST['quarantine_reason'],
                         $_POST['quarantine_location'] ?: null,
                         $_POST['quarantine_restrictions'] ?: null,
-                        $_POST['quarantine_veterinarian_id'] ?: null,
+                        $veterinarianId,
                         $_POST['quarantine_notes'] ?: null
                     ]);
                     
@@ -295,7 +349,7 @@ unset($_SESSION['flash_message'], $_SESSION['flash_type']);
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Módulo Veterinario - AgroGan</title>
+  <title>Módulo Veterinario - Rc El Bosque</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
   <style>
     :root {
@@ -928,25 +982,119 @@ unset($_SESSION['flash_message'], $_SESSION['flash_type']);
         <form method="POST" class="form-grid">
           <input type="hidden" name="action" value="create_treatment">
           
-          <div class="form-group">
+          <div class="form-group" style="grid-column: 1 / -1;">
             <label for="animal_id">Animal *</label>
-            <select id="animal_id" name="animal_id" required>
-              <option value="">Seleccionar animal...</option>
+            
+            <!-- Búsqueda y Filtros -->
+            <div style="margin-bottom: 1rem; padding: 1rem; background: var(--gray-50); border-radius: 8px; border: 1px solid var(--gray-200);">
+              <div style="margin-bottom: 1rem;">
+                <label for="animal-search-vet" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                  <i class="fas fa-search"></i> Buscar Animal
+                </label>
+                <input type="text" id="animal-search-vet" placeholder="Buscar por nombre, arete, especie, raza..." style="width: 100%; padding: 0.75rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.95rem;" onkeyup="filterVetAnimals()">
+              </div>
+              
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                <div>
+                  <label for="filter-species-vet" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Especie</label>
+                  <select id="filter-species-vet" onchange="filterVetAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todas</option>
+                    <?php 
+                    $uniqueSpecies = array_unique(array_column($animals, 'species_name'));
+                    foreach ($uniqueSpecies as $spec): 
+                      if (!empty($spec)):
+                    ?>
+                      <option value="<?= htmlspecialchars($spec) ?>"><?= htmlspecialchars($spec) ?></option>
+                    <?php 
+                      endif;
+                    endforeach; 
+                    ?>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="filter-breed-vet" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Raza</label>
+                  <select id="filter-breed-vet" onchange="filterVetAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todas</option>
+                    <?php 
+                    $uniqueBreeds = array_unique(array_column($animals, 'breed_name'));
+                    foreach ($uniqueBreeds as $br): 
+                      if (!empty($br)):
+                    ?>
+                      <option value="<?= htmlspecialchars($br) ?>"><?= htmlspecialchars($br) ?></option>
+                    <?php 
+                      endif;
+                    endforeach; 
+                    ?>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="filter-gender-vet" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Género</label>
+                  <select id="filter-gender-vet" onchange="filterVetAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todos</option>
+                    <option value="macho">Macho</option>
+                    <option value="hembra">Hembra</option>
+                    <option value="indefinido">Indefinido</option>
+                  </select>
+                </div>
+                
+                <div style="display: flex; align-items: flex-end;">
+                  <button type="button" onclick="clearVetAnimalFilters()" class="btn btn-secondary" style="width: 100%; padding: 0.5rem;">
+                    <i class="fas fa-times"></i> Limpiar Filtros
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Lista de Animales -->
+            <div id="animals-container-vet" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: 8px; padding: 1rem;">
               <?php foreach ($animals as $animal): ?>
-                <option value="<?= $animal['id'] ?>"><?= htmlspecialchars($animal['tag_code']) ?> - <?= htmlspecialchars($animal['name'] ?: 'Sin nombre') ?></option>
+                <label class="animal-item-vet" style="display: block; margin-bottom: 0.5rem; padding: 0.5rem; border-radius: 4px; transition: background 0.2s; cursor: pointer;" 
+                       data-name="<?= strtolower(htmlspecialchars($animal['name'] ?: '')) ?>"
+                       data-tag-code="<?= strtolower(htmlspecialchars($animal['tag_code'] ?? '')) ?>"
+                       data-species="<?= strtolower(htmlspecialchars($animal['species_name'] ?? '')) ?>"
+                       data-breed="<?= strtolower(htmlspecialchars($animal['breed_name'] ?? '')) ?>"
+                       data-gender="<?= strtolower(htmlspecialchars($animal['gender'] ?? '')) ?>"
+                       data-animal-id="<?= $animal['id'] ?>">
+                  <input type="radio" name="animal_id" value="<?= $animal['id'] ?>" id="animal_<?= $animal['id'] ?>" class="vet-animal-radio" required>
+                  <span style="margin-left: 0.5rem;">
+                    <strong><?= htmlspecialchars($animal['tag_code']) ?></strong>
+                    <?php if (!empty($animal['name'])): ?>
+                      - <strong><?= htmlspecialchars($animal['name']) ?></strong>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['species_name'])): ?>
+                      <span style="color: var(--gray-600);"> · <?= htmlspecialchars($animal['species_name']) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['breed_name'])): ?>
+                      <span style="color: var(--gray-600);"> · <?= htmlspecialchars($animal['breed_name']) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['gender'])): ?>
+                      <span style="color: var(--gray-600);"> (<?= htmlspecialchars($animal['gender']) ?>)</span>
+                    <?php endif; ?>
+                  </span>
+                </label>
               <?php endforeach; ?>
-            </select>
+            </div>
+            <div id="no-animals-message-vet" style="display: none; padding: 1rem; text-align: center; color: var(--gray-600); background: var(--gray-50); border-radius: 8px; margin-top: 0.5rem;">
+              <i class="fas fa-info-circle"></i> No se encontraron animales con los filtros aplicados.
+            </div>
           </div>
           
+          <?php if ($user): ?>
           <div class="form-group">
-            <label for="veterinarian_id">Veterinario</label>
-            <select id="veterinarian_id" name="veterinarian_id">
-              <option value="">Seleccionar veterinario...</option>
-              <?php foreach ($veterinarians as $vet): ?>
-                <option value="<?= $vet['id'] ?>"><?= htmlspecialchars($vet['name']) ?></option>
-              <?php endforeach; ?>
-            </select>
+            <label>Veterinario Responsable</label>
+            <div style="padding: 0.75rem; background: var(--bg-green); border: 1px solid var(--primary-green); border-radius: 6px; color: var(--text-dark);">
+              <i class="fas fa-user-md"></i> <strong><?= htmlspecialchars($user['name']) ?></strong>
+              <?php if (!empty($user['email'])): ?>
+                <br><small style="color: var(--gray-600);"><?= htmlspecialchars($user['email']) ?></small>
+              <?php endif; ?>
+            </div>
+            <small style="color: var(--gray-600); display: block; margin-top: 0.25rem;">
+              El tratamiento será asignado automáticamente al usuario logueado.
+            </small>
           </div>
+          <?php endif; ?>
           
           <div class="form-group">
             <label for="treatment_date">Fecha del Tratamiento *</label>
@@ -1110,14 +1258,103 @@ unset($_SESSION['flash_message'], $_SESSION['flash_type']);
         <form method="POST" class="form-grid">
           <input type="hidden" name="action" value="create_quarantine">
           
-          <div class="form-group">
+          <div class="form-group" style="grid-column: 1 / -1;">
             <label for="quarantine_animal_id">Animal *</label>
-            <select id="quarantine_animal_id" name="quarantine_animal_id" required>
-              <option value="">Seleccionar animal...</option>
+            
+            <!-- Búsqueda y Filtros para Cuarentenas -->
+            <div style="margin-bottom: 1rem; padding: 1rem; background: var(--gray-50); border-radius: 8px; border: 1px solid var(--gray-200);">
+              <div style="margin-bottom: 1rem;">
+                <label for="animal-search-quarantine" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                  <i class="fas fa-search"></i> Buscar Animal
+                </label>
+                <input type="text" id="animal-search-quarantine" placeholder="Buscar por nombre, arete, especie, raza..." style="width: 100%; padding: 0.75rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.95rem;" onkeyup="filterQuarantineAnimals()">
+              </div>
+              
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                <div>
+                  <label for="filter-species-quarantine" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Especie</label>
+                  <select id="filter-species-quarantine" onchange="filterQuarantineAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todas</option>
+                    <?php 
+                    $uniqueSpecies = array_unique(array_column($animals, 'species_name'));
+                    foreach ($uniqueSpecies as $spec): 
+                      if (!empty($spec)):
+                    ?>
+                      <option value="<?= htmlspecialchars($spec) ?>"><?= htmlspecialchars($spec) ?></option>
+                    <?php 
+                      endif;
+                    endforeach; 
+                    ?>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="filter-breed-quarantine" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Raza</label>
+                  <select id="filter-breed-quarantine" onchange="filterQuarantineAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todas</option>
+                    <?php 
+                    $uniqueBreeds = array_unique(array_column($animals, 'breed_name'));
+                    foreach ($uniqueBreeds as $br): 
+                      if (!empty($br)):
+                    ?>
+                      <option value="<?= htmlspecialchars($br) ?>"><?= htmlspecialchars($br) ?></option>
+                    <?php 
+                      endif;
+                    endforeach; 
+                    ?>
+                  </select>
+                </div>
+                
+                <div>
+                  <label for="filter-gender-quarantine" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Género</label>
+                  <select id="filter-gender-quarantine" onchange="filterQuarantineAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                    <option value="">Todos</option>
+                    <option value="macho">Macho</option>
+                    <option value="hembra">Hembra</option>
+                    <option value="indefinido">Indefinido</option>
+                  </select>
+                </div>
+                
+                <div style="display: flex; align-items: flex-end;">
+                  <button type="button" onclick="clearQuarantineAnimalFilters()" class="btn btn-secondary" style="width: 100%; padding: 0.5rem;">
+                    <i class="fas fa-times"></i> Limpiar Filtros
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Lista de Animales para Cuarentenas -->
+            <div id="animals-container-quarantine" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: 8px; padding: 1rem;">
               <?php foreach ($animals as $animal): ?>
-                <option value="<?= $animal['id'] ?>"><?= htmlspecialchars($animal['tag_code']) ?> - <?= htmlspecialchars($animal['name'] ?: 'Sin nombre') ?></option>
+                <label class="animal-item-quarantine" style="display: block; margin-bottom: 0.5rem; padding: 0.5rem; border-radius: 4px; transition: background 0.2s; cursor: pointer;" 
+                       data-name="<?= strtolower(htmlspecialchars($animal['name'] ?: '')) ?>"
+                       data-tag-code="<?= strtolower(htmlspecialchars($animal['tag_code'] ?? '')) ?>"
+                       data-species="<?= strtolower(htmlspecialchars($animal['species_name'] ?? '')) ?>"
+                       data-breed="<?= strtolower(htmlspecialchars($animal['breed_name'] ?? '')) ?>"
+                       data-gender="<?= strtolower(htmlspecialchars($animal['gender'] ?? '')) ?>"
+                       data-animal-id="<?= $animal['id'] ?>">
+                  <input type="radio" name="quarantine_animal_id" value="<?= $animal['id'] ?>" id="quarantine_animal_<?= $animal['id'] ?>" class="quarantine-animal-radio" required>
+                  <span style="margin-left: 0.5rem;">
+                    <strong><?= htmlspecialchars($animal['tag_code']) ?></strong>
+                    <?php if (!empty($animal['name'])): ?>
+                      - <strong><?= htmlspecialchars($animal['name']) ?></strong>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['species_name'])): ?>
+                      <span style="color: var(--gray-600);"> · <?= htmlspecialchars($animal['species_name']) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['breed_name'])): ?>
+                      <span style="color: var(--gray-600);"> · <?= htmlspecialchars($animal['breed_name']) ?></span>
+                    <?php endif; ?>
+                    <?php if (!empty($animal['gender'])): ?>
+                      <span style="color: var(--gray-600);"> (<?= htmlspecialchars($animal['gender']) ?>)</span>
+                    <?php endif; ?>
+                  </span>
+                </label>
               <?php endforeach; ?>
-            </select>
+            </div>
+            <div id="no-animals-message-quarantine" style="display: none; padding: 1rem; text-align: center; color: var(--gray-600); background: var(--gray-50); border-radius: 8px; margin-top: 0.5rem;">
+              <i class="fas fa-info-circle"></i> No se encontraron animales con los filtros aplicados.
+            </div>
           </div>
           
           <div class="form-group">
@@ -1130,15 +1367,20 @@ unset($_SESSION['flash_message'], $_SESSION['flash_type']);
             <input type="date" id="quarantine_end_date" name="quarantine_end_date">
           </div>
           
+          <?php if ($user): ?>
           <div class="form-group">
-            <label for="quarantine_veterinarian_id">Veterinario Responsable</label>
-            <select id="quarantine_veterinarian_id" name="quarantine_veterinarian_id">
-              <option value="">Seleccionar veterinario...</option>
-              <?php foreach ($veterinarians as $vet): ?>
-                <option value="<?= $vet['id'] ?>"><?= htmlspecialchars($vet['name']) ?></option>
-              <?php endforeach; ?>
-            </select>
+            <label>Veterinario Responsable</label>
+            <div style="padding: 0.75rem; background: var(--bg-green); border: 1px solid var(--primary-green); border-radius: 6px; color: var(--text-dark);">
+              <i class="fas fa-user-md"></i> <strong><?= htmlspecialchars($user['name']) ?></strong>
+              <?php if (!empty($user['email'])): ?>
+                <br><small style="color: var(--gray-600);"><?= htmlspecialchars($user['email']) ?></small>
+              <?php endif; ?>
+            </div>
+            <small style="color: var(--gray-600); display: block; margin-top: 0.25rem;">
+              La cuarentena será asignada automáticamente al usuario logueado.
+            </small>
           </div>
+          <?php endif; ?>
           
           <div class="form-group" style="grid-column: 1 / -1;">
             <label for="quarantine_reason">Motivo de Cuarentena *</label>
@@ -1371,6 +1613,222 @@ unset($_SESSION['flash_message'], $_SESSION['flash_type']);
         setTimeout(() => flashMessage.remove(), 300);
       }
     }, 5000);
+
+    // Filtrar animales en el módulo veterinario
+    function filterVetAnimals() {
+      const searchTerm = document.getElementById('animal-search-vet').value.toLowerCase().trim();
+      const filterSpecies = document.getElementById('filter-species-vet').value.toLowerCase();
+      const filterBreed = document.getElementById('filter-breed-vet').value.toLowerCase();
+      const filterGender = document.getElementById('filter-gender-vet').value.toLowerCase();
+      
+      const animalItems = document.querySelectorAll('.animal-item-vet');
+      let visibleCount = 0;
+      
+      animalItems.forEach(item => {
+        const name = item.getAttribute('data-name') || '';
+        const tagCode = item.getAttribute('data-tag-code') || '';
+        const species = item.getAttribute('data-species') || '';
+        const breed = item.getAttribute('data-breed') || '';
+        const gender = item.getAttribute('data-gender') || '';
+        
+        // Combinar nombre y tag code para búsqueda
+        const searchableText = name + ' ' + tagCode + ' ' + species + ' ' + breed;
+        
+        // Aplicar filtros
+        const matchesSearch = !searchTerm || searchableText.includes(searchTerm);
+        const matchesSpecies = !filterSpecies || species === filterSpecies;
+        const matchesBreed = !filterBreed || breed === filterBreed;
+        const matchesGender = !filterGender || gender === filterGender;
+        
+        if (matchesSearch && matchesSpecies && matchesBreed && matchesGender) {
+          item.style.display = 'block';
+          visibleCount++;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+      
+      // Mostrar/ocultar mensaje de "no encontrados"
+      const noAnimalsMsg = document.getElementById('no-animals-message-vet');
+      if (noAnimalsMsg) {
+        noAnimalsMsg.style.display = visibleCount === 0 ? 'block' : 'none';
+      }
+    }
+
+    // Limpiar todos los filtros del módulo veterinario
+    function clearVetAnimalFilters() {
+      document.getElementById('animal-search-vet').value = '';
+      document.getElementById('filter-species-vet').value = '';
+      document.getElementById('filter-breed-vet').value = '';
+      document.getElementById('filter-gender-vet').value = '';
+      filterVetAnimals();
+    }
+
+    // Seleccionar animal cuando se hace click en el label
+    function selectAnimalForTreatment(animalId) {
+      const radio = document.getElementById('animal_' + animalId);
+      if (radio) {
+        radio.checked = true;
+        // Resaltar visualmente el animal seleccionado
+        document.querySelectorAll('.animal-item-vet').forEach(item => {
+          item.style.background = '';
+          item.style.color = '';
+        });
+        const selectedItem = document.querySelector(`label[data-animal-id="${animalId}"]`);
+        if (selectedItem) {
+          selectedItem.style.background = 'var(--primary-green)';
+          selectedItem.style.color = 'white';
+          // Restaurar color después de un momento
+          setTimeout(() => {
+            selectedItem.style.background = '';
+            selectedItem.style.color = '';
+          }, 1000);
+        }
+      }
+    }
+
+    // Agregar event listeners cuando la página carga
+    document.addEventListener('DOMContentLoaded', function() {
+      const animalItems = document.querySelectorAll('.animal-item-vet');
+      animalItems.forEach(item => {
+        // Agregar click handler para seleccionar el animal
+        item.addEventListener('click', function(e) {
+          // Evitar doble activación si se hace click directamente en el radio
+          if (e.target.type === 'radio') return;
+          
+          const animalId = this.getAttribute('data-animal-id');
+          if (animalId) {
+            selectAnimalForTreatment(parseInt(animalId));
+          }
+        });
+        
+        // Agregar estilos hover
+        item.addEventListener('mouseenter', function() {
+          if (!this.querySelector('input[type="radio"]:checked')) {
+            this.style.background = 'var(--gray-100)';
+          }
+        });
+        item.addEventListener('mouseleave', function() {
+          if (!this.querySelector('input[type="radio"]:checked')) {
+            this.style.background = '';
+          }
+        });
+        
+        // Actualizar estilo cuando se selecciona el radio
+        const radio = item.querySelector('input[type="radio"]');
+        if (radio) {
+          radio.addEventListener('change', function() {
+            if (this.checked) {
+              document.querySelectorAll('.animal-item-vet').forEach(i => {
+                i.style.background = '';
+                i.style.color = '';
+              });
+              item.style.background = 'var(--primary-green)';
+              item.style.color = 'white';
+            }
+          });
+        }
+      });
+      
+      // Configurar filtros para cuarentenas
+      const quarantineItems = document.querySelectorAll('.animal-item-quarantine');
+      quarantineItems.forEach(item => {
+        item.addEventListener('click', function(e) {
+          if (e.target.type === 'radio') return;
+          const animalId = this.getAttribute('data-animal-id');
+          if (animalId) {
+            const radio = document.getElementById('quarantine_animal_' + animalId);
+            if (radio) {
+              radio.checked = true;
+              document.querySelectorAll('.animal-item-quarantine').forEach(i => {
+                i.style.background = '';
+                i.style.color = '';
+              });
+              item.style.background = 'var(--primary-green)';
+              item.style.color = 'white';
+            }
+          }
+        });
+        
+        item.addEventListener('mouseenter', function() {
+          if (!this.querySelector('input[type="radio"]:checked')) {
+            this.style.background = 'var(--gray-100)';
+          }
+        });
+        item.addEventListener('mouseleave', function() {
+          if (!this.querySelector('input[type="radio"]:checked')) {
+            this.style.background = '';
+          }
+        });
+        
+        const radio = item.querySelector('input[type="radio"]');
+        if (radio) {
+          radio.addEventListener('change', function() {
+            if (this.checked) {
+              document.querySelectorAll('.animal-item-quarantine').forEach(i => {
+                i.style.background = '';
+                i.style.color = '';
+              });
+              item.style.background = 'var(--primary-green)';
+              item.style.color = 'white';
+            }
+          });
+        }
+      });
+    });
+
+    // Filtrar animales para cuarentenas
+    function filterQuarantineAnimals() {
+      const searchTerm = document.getElementById('animal-search-quarantine')?.value.toLowerCase().trim() || '';
+      const filterSpecies = document.getElementById('filter-species-quarantine')?.value.toLowerCase() || '';
+      const filterBreed = document.getElementById('filter-breed-quarantine')?.value.toLowerCase() || '';
+      const filterGender = document.getElementById('filter-gender-quarantine')?.value.toLowerCase() || '';
+      
+      const animalItems = document.querySelectorAll('.animal-item-quarantine');
+      let visibleCount = 0;
+      
+      animalItems.forEach(item => {
+        const name = item.getAttribute('data-name') || '';
+        const tagCode = item.getAttribute('data-tag-code') || '';
+        const species = item.getAttribute('data-species') || '';
+        const breed = item.getAttribute('data-breed') || '';
+        const gender = item.getAttribute('data-gender') || '';
+        
+        const searchableText = name + ' ' + tagCode + ' ' + species + ' ' + breed;
+        
+        const matchesSearch = !searchTerm || searchableText.includes(searchTerm);
+        const matchesSpecies = !filterSpecies || species === filterSpecies;
+        const matchesBreed = !filterBreed || breed === filterBreed;
+        const matchesGender = !filterGender || gender === filterGender;
+        
+        if (matchesSearch && matchesSpecies && matchesBreed && matchesGender) {
+          item.style.display = 'block';
+          visibleCount++;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+      
+      const noAnimalsMsg = document.getElementById('no-animals-message-quarantine');
+      if (noAnimalsMsg) {
+        noAnimalsMsg.style.display = visibleCount === 0 ? 'block' : 'none';
+      }
+    }
+
+    // Limpiar filtros de cuarentenas
+    function clearQuarantineAnimalFilters() {
+      const searchEl = document.getElementById('animal-search-quarantine');
+      const speciesEl = document.getElementById('filter-species-quarantine');
+      const breedEl = document.getElementById('filter-breed-quarantine');
+      const genderEl = document.getElementById('filter-gender-quarantine');
+      
+      if (searchEl) searchEl.value = '';
+      if (speciesEl) speciesEl.value = '';
+      if (breedEl) breedEl.value = '';
+      if (genderEl) genderEl.value = '';
+      
+      filterQuarantineAnimals();
+    }
   </script>
 </body>
 </html>

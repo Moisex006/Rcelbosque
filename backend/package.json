@@ -1,7 +1,7 @@
 {
-  "name": "agrogan-backend",
+  "name": "rcelbosque-backend",
   "version": "2.0.0",
-  "description": "AgroGan API: auth + roles + animal catalog (public/private)",
+  "description": "Rc El Bosque API: auth + roles + animal catalog (public/private)",
   "main": "server.js",
   "type": "module",
   "scripts": {

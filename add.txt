@@ -1,7 +1,0 @@
-1. Poder agregar más tipos de lote
-2. Agregar la edad intuitivamente por la fecha de nacimiento
-3. Agregar lotes al catálogo
-4. Eliminar precio en lotes
-5. Filtros de búsqueda en creación de lotes
-6. Filtros de búsqueda en busqueda de ánimal en tratamiento veterinario
-7. Cambiar todos los AgroGan por Rc El Bosque

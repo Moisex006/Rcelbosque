@@ -1,3 +1,3 @@
 
-# AgroGan — Autenticación, Catálogo y Admin
+# Rc El Bosque — Autenticación, Catálogo y Admin
 (Ver uso detallado en el mensaje principal)

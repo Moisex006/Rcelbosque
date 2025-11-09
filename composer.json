@@ -1,0 +1,15 @@
+{
+    "name": "rcelbosque/sistema",
+    "description": "Sistema de gestión ganadera Rc El Bosque",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "phpmailer/phpmailer": "^6.9"
+    },
+    "autoload": {
+        "psr-4": {
+            "RcElBosque\\": "app/"
+        }
+    }
+}
+

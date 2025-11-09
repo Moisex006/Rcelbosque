@@ -1,10 +1,32 @@
 <?php
 require_once '../app/config.php';
+require_once '../app/logger.php';
 require_login(); // Ensure user is logged in
 require_role(['admin_general', 'admin_finca', 'veterinario']); // Allow admin_general, admin_finca, or veterinario
 
 // Database connection
 $pdo = get_pdo();
+
+// Obtener logs para mostrar en consola del navegador
+$browser_logs = get_browser_logs();
+
+// Ensure dynamic lot types support
+try {
+  $pdo->exec("CREATE TABLE IF NOT EXISTS lot_types (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(50) NOT NULL UNIQUE)");
+} catch (Exception $e) {}
+// Try to migrate lots.lot_type to VARCHAR if it was ENUM
+try { $pdo->exec("ALTER TABLE lots MODIFY lot_type VARCHAR(50) NOT NULL"); } catch (Exception $e) {}
+// Seed defaults if empty
+try {
+  $cnt = $pdo->query("SELECT COUNT(*) AS c FROM lot_types")->fetch();
+  if ((int)($cnt['c'] ?? 0) === 0) {
+    $stmt = $pdo->prepare("INSERT INTO lot_types(name) VALUES (?), (?), (?), (?)");
+    $stmt->execute(['venta','reproduccion','engorde','leche']);
+  }
+} catch (Exception $e) {}
+// Load lot types
+$lotTypes = [];
+try { $lotTypes = $pdo->query("SELECT name FROM lot_types ORDER BY name")->fetchAll(PDO::FETCH_COLUMN); } catch (Exception $e) { $lotTypes = ['venta','reproduccion','engorde','leche']; }
 
 // Fetch data
 $animals = $pdo->query("
@@ -36,6 +58,44 @@ $lots = $pdo->query("
 ")->fetchAll();
 $species = $pdo->query("SELECT * FROM species ORDER BY name")->fetchAll();
 $breeds = $pdo->query("SELECT * FROM breeds ORDER BY name")->fetchAll();
+
+// Public catalog datasets
+$publishedAnimals = array_values(array_filter($animals, function($a){ return !empty($a['in_cat']); }));
+$publishedLots = $pdo->query("
+  SELECT l.*, f.name as farm_name,
+         COUNT(la.animal_id) as animal_count
+  FROM lots l
+  LEFT JOIN farms f ON f.id = l.farm_id
+  LEFT JOIN lot_animals la ON la.lot_id = l.id
+  WHERE l.status = 'disponible'
+    AND EXISTS (
+      SELECT 1 FROM nominations n
+      WHERE n.item_type = 'lot'
+        AND n.item_id = l.id
+        AND n.status = 'approved'
+    )
+  GROUP BY l.id
+  ORDER BY l.created_at DESC
+")->fetchAll();
+
+// Lot publication status helpers
+$approvedLotIds = $pdo->query("SELECT item_id FROM nominations WHERE item_type = 'lot' AND status = 'approved'")->fetchAll(PDO::FETCH_COLUMN);
+$pendingLotIds = $pdo->query("SELECT item_id FROM nominations WHERE item_type = 'lot' AND status = 'pending'")->fetchAll(PDO::FETCH_COLUMN);
+
+// Edit lot context
+$editLotId = isset($_GET['edit_lot']) ? (int)$_GET['edit_lot'] : 0;
+$editLot = null;
+$editLotAnimals = [];
+if ($editLotId > 0) {
+  $stmt = $pdo->prepare("SELECT l.*, f.name as farm_name FROM lots l LEFT JOIN farms f ON f.id = l.farm_id WHERE l.id = ?");
+  $stmt->execute([$editLotId]);
+  $editLot = $stmt->fetch();
+  if ($editLot) {
+    $stmt = $pdo->prepare("SELECT a.* FROM lot_animals la JOIN animals a ON a.id = la.animal_id WHERE la.lot_id = ? ORDER BY a.name");
+    $stmt->execute([$editLotId]);
+    $editLotAnimals = $stmt->fetchAll();
+  }
+}
 
 // Obtener postulaciones
 if (is_admin_general()) {
@@ -76,6 +136,83 @@ if (is_admin_general()) {
   $nominations = [];
 }
 
+// Obtener cotizaciones (solo para admin_general)
+$quotes = [];
+if (is_admin_general()) {
+  try {
+    // Crear tabla si no existe
+    $pdo->exec("
+      CREATE TABLE IF NOT EXISTS quotes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        item_type ENUM('animal', 'lot') NOT NULL,
+        item_id INT NOT NULL,
+        customer_name VARCHAR(120) NOT NULL,
+        customer_email VARCHAR(120) NOT NULL,
+        customer_phone VARCHAR(20) NOT NULL,
+        customer_message TEXT,
+        status ENUM('pendiente', 'en_proceso', 'respondida') NOT NULL DEFAULT 'pendiente',
+        created_by INT NULL,
+        updated_by INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB
+    ");
+    
+    $quotes = $pdo->query("
+      SELECT q.*,
+             u1.name as created_by_name,
+             u2.name as updated_by_name,
+             a.tag_code as animal_tag_code,
+             a.name as animal_name,
+             l.name as lot_name
+      FROM quotes q
+      LEFT JOIN users u1 ON u1.id = q.created_by
+      LEFT JOIN users u2 ON u2.id = q.updated_by
+      LEFT JOIN animals a ON (q.item_type = 'animal' AND a.id = q.item_id)
+      LEFT JOIN lots l ON (q.item_type = 'lot' AND l.id = q.item_id)
+      ORDER BY q.created_at DESC
+    ")->fetchAll();
+  } catch (Exception $e) {
+    error_log("Error al obtener cotizaciones: " . $e->getMessage());
+    $quotes = [];
+  }
+}
+
+// Obtener imágenes del carrusel (solo para admin_general)
+$carousel_images = [];
+if (is_admin_general()) {
+  try {
+    // Crear tabla si no existe
+    $pdo->exec("
+      CREATE TABLE IF NOT EXISTS carousel_images (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        file_path VARCHAR(500) NOT NULL,
+        title VARCHAR(200),
+        description TEXT,
+        sort_order INT DEFAULT 0,
+        is_active TINYINT(1) DEFAULT 1,
+        created_by INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB
+    ");
+    
+    $carousel_images = $pdo->query("
+      SELECT c.*, u.name as created_by_name
+      FROM carousel_images c
+      LEFT JOIN users u ON u.id = c.created_by
+      ORDER BY c.sort_order ASC, c.created_at DESC
+    ")->fetchAll();
+  } catch (Exception $e) {
+    error_log("Error al obtener imágenes del carrusel: " . $e->getMessage());
+    $carousel_images = [];
+  }
+}
+
 // Get current user
 $user = current_user();
 
@@ -93,12 +230,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     switch ($action) {
       case 'add_animal':
-        // Generar un tag_code único si no se proporciona
-        $tag_code = !empty($_POST['tag_code']) ? $_POST['tag_code'] : null;
-        if (empty($tag_code)) {
-          // Generar un tag_code automático basado en timestamp y ID
-          $tag_code = 'ANIMAL-' . date('Ymd') . '-' . time();
+        // Validar que tag_code sea obligatorio
+        if (empty($_POST['tag_code']) || trim($_POST['tag_code']) === '') {
+          $_SESSION['flash_err'] = 'El código de animal es obligatorio.';
+          break;
         }
+        
+        // Validar peso si se proporciona
+        $weight = !empty($_POST['weight']) ? floatval($_POST['weight']) : null;
+        if ($weight !== null && ($weight < 20 || $weight > 1000)) {
+          $_SESSION['flash_err'] = 'El peso debe estar entre 20 kg y 1000 kg.';
+          break;
+        }
+        
+        // Obtener y limpiar el tag_code
+        $tag_code = trim($_POST['tag_code']);
         
         // Verificar que el tag_code no exista
         $check_stmt = $pdo->prepare("SELECT COUNT(*) as count FROM animals WHERE tag_code = ?");
@@ -106,26 +252,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $exists = $check_stmt->fetch();
         
         if ($exists['count'] > 0) {
-          // Si existe, agregar un sufijo numérico
-          $counter = 1;
-          $original_tag = $tag_code;
-          while ($exists['count'] > 0) {
-            $tag_code = $original_tag . '-' . $counter;
-            $check_stmt->execute([$tag_code]);
-            $exists = $check_stmt->fetch();
-            $counter++;
-          }
+          $_SESSION['flash_err'] = 'El código de animal ya existe. Por favor, usa un código diferente.';
+          break;
+        }
+        
+        // Validar que la fecha de nacimiento no sea futura
+        $birth_date = !empty($_POST['birth_date']) ? $_POST['birth_date'] : null;
+        if ($birth_date && $birth_date > date('Y-m-d')) {
+          $_SESSION['flash_err'] = 'La fecha de nacimiento no puede ser posterior a la fecha actual.';
+          break;
         }
         
         $stmt = $pdo->prepare("INSERT INTO animals (tag_code, name, species_id, breed_id, birth_date, gender, weight, color, farm_id, in_cat, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([
           $tag_code,
-          $_POST['name'],
+          !empty($_POST['name']) ? trim($_POST['name']) : null,
           !empty($_POST['species_id']) ? $_POST['species_id'] : null,
           !empty($_POST['breed_id']) ? $_POST['breed_id'] : null,
-          !empty($_POST['birth_date']) ? $_POST['birth_date'] : null,
+          $birth_date,
           !empty($_POST['gender']) ? $_POST['gender'] : 'indefinido',
-          !empty($_POST['weight']) ? $_POST['weight'] : null,
+          $weight,
           !empty($_POST['color']) ? $_POST['color'] : null,
           !empty($_POST['farm_id']) ? $_POST['farm_id'] : null,
           isset($_POST['in_cat']) ? 1 : 0,
@@ -150,7 +296,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           
           $fileCount = count($_FILES['photos']['name']);
           if ($fileCount > $maxPhotos) {
-            $_SESSION['flash_error'] = "Máximo {$maxPhotos} fotos permitidas";
+            $_SESSION['flash_err'] = "Máximo {$maxPhotos} fotos permitidas";
             break;
           }
           
@@ -163,13 +309,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Validar tipo de archivo
             if (!in_array($fileType, $allowedTypes)) {
-              $_SESSION['flash_error'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
+              $_SESSION['flash_err'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
               break 2;
             }
             
             // Validar tamaño
             if ($fileSize > $maxFileSize) {
-              $_SESSION['flash_error'] = 'El archivo es demasiado grande (máximo 5MB)';
+              $_SESSION['flash_err'] = 'El archivo es demasiado grande (máximo 5MB)';
               break 2;
             }
             
@@ -224,6 +370,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('animal', ?, ?, ?, 'pending')");
           $stmt->execute([$animal_id, $_SESSION['user']['id'], $animal['farm_id'] ?? null]);
           
+          // Enviar correo de notificación
+          if (function_exists('send_nomination_email')) {
+            try {
+              $email_sent = send_nomination_email($animal_id, $_SESSION['user']['id'], $pdo);
+              if (!$email_sent) {
+                error_log("No se pudo enviar el correo de postulación para el animal ID: $animal_id");
+              }
+            } catch (Exception $e) {
+              error_log("Error al enviar correo de postulación (animal ID: $animal_id): " . $e->getMessage());
+              error_log("Stack trace: " . $e->getTraceAsString());
+            } catch (Throwable $e) {
+              error_log("Error fatal al enviar correo de postulación (animal ID: $animal_id): " . $e->getMessage());
+              error_log("Stack trace: " . $e->getTraceAsString());
+            }
+          } else {
+            error_log("ERROR: La función send_nomination_email no está disponible. Verificar que app/email.php esté cargado correctamente.");
+          }
+          
           $_SESSION['flash_ok'] = 'Animal registrado exitosamente' . (!empty($uploaded_files) ? ' con ' . count($uploaded_files) . ' foto(s)' : '') . ' y postulado para el catálogo';
         } else {
           $_SESSION['flash_ok'] = 'Animal registrado exitosamente' . (!empty($uploaded_files) ? ' con ' . count($uploaded_files) . ' foto(s)' : '');
@@ -231,14 +395,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         break;
         
       case 'edit_animal':
-        $stmt = $pdo->prepare("UPDATE animals SET name=?, species_id=?, breed_id=?, birth_date=?, gender=?, weight=?, color=?, farm_id=?, in_cat=?, description=? WHERE id=?");
+        // Validar que tag_code sea obligatorio
+        if (empty($_POST['tag_code']) || trim($_POST['tag_code']) === '') {
+          $_SESSION['flash_err'] = 'El código de animal es obligatorio.';
+          break;
+        }
+        
+        // Validar peso si se proporciona
+        $weight = !empty($_POST['weight']) ? floatval($_POST['weight']) : null;
+        if ($weight !== null && ($weight < 20 || $weight > 1000)) {
+          $_SESSION['flash_err'] = 'El peso debe estar entre 20 kg y 1000 kg.';
+          break;
+        }
+        
+        // Verificar que el tag_code no esté en uso por otro animal
+        $tag_code = trim($_POST['tag_code']);
+        $check_stmt = $pdo->prepare("SELECT id FROM animals WHERE tag_code = ? AND id != ?");
+        $check_stmt->execute([$tag_code, $_POST['animal_id']]);
+        $exists = $check_stmt->fetch();
+        
+        if ($exists) {
+          $_SESSION['flash_err'] = 'El código de animal ya está en uso por otro animal. Por favor, usa un código diferente.';
+          break;
+        }
+        
+        // Validar que la fecha de nacimiento no sea futura
+        $birth_date = !empty($_POST['birth_date']) ? $_POST['birth_date'] : null;
+        if ($birth_date && $birth_date > date('Y-m-d')) {
+          $_SESSION['flash_err'] = 'La fecha de nacimiento no puede ser posterior a la fecha actual.';
+          break;
+        }
+        
+        $stmt = $pdo->prepare("UPDATE animals SET tag_code=?, name=?, species_id=?, breed_id=?, birth_date=?, gender=?, weight=?, color=?, farm_id=?, in_cat=?, description=? WHERE id=?");
         $stmt->execute([
-          $_POST['name'],
+          $tag_code,
+          !empty($_POST['name']) ? trim($_POST['name']) : null,
           !empty($_POST['species_id']) ? $_POST['species_id'] : null,
           !empty($_POST['breed_id']) ? $_POST['breed_id'] : null,
-          !empty($_POST['birth_date']) ? $_POST['birth_date'] : null,
+          $birth_date,
           !empty($_POST['gender']) ? $_POST['gender'] : 'indefinido',
-          !empty($_POST['weight']) ? $_POST['weight'] : null,
+          $weight,
           !empty($_POST['color']) ? $_POST['color'] : null,
           !empty($_POST['farm_id']) ? $_POST['farm_id'] : null,
           isset($_POST['in_cat']) ? 1 : 0,
@@ -269,7 +465,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           
           $fileCount = count($_FILES['photos']['name']);
           if (($existingCount + $fileCount) > $maxPhotos) {
-            $_SESSION['flash_error'] = "Máximo {$maxPhotos} fotos permitidas. Ya tienes {$existingCount} fotos.";
+            $_SESSION['flash_err'] = "Máximo {$maxPhotos} fotos permitidas. Ya tienes {$existingCount} fotos.";
             break;
           }
           
@@ -282,13 +478,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Validar tipo de archivo
             if (!in_array($fileType, $allowedTypes)) {
-              $_SESSION['flash_error'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
+              $_SESSION['flash_err'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
               break 2;
             }
             
             // Validar tamaño
             if ($fileSize > $maxFileSize) {
-              $_SESSION['flash_error'] = 'El archivo es demasiado grande (máximo 5MB)';
+              $_SESSION['flash_err'] = 'El archivo es demasiado grande (máximo 5MB)';
               break 2;
             }
             
@@ -346,35 +542,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           break;
         }
         
+        // Validar y normalizar farm_id
+        $farm_id = !empty($_POST['farm_id']) && trim($_POST['farm_id']) !== '' ? intval($_POST['farm_id']) : null;
+        
+        // Si se proporciona un farm_id, verificar que existe
+        if ($farm_id !== null) {
+          $check_stmt = $pdo->prepare("SELECT id FROM farms WHERE id = ?");
+          $check_stmt->execute([$farm_id]);
+          if (!$check_stmt->fetch()) {
+            $_SESSION['flash_err'] = 'La finca seleccionada no existe';
+            break;
+          }
+        }
+        
         $stmt = $pdo->prepare("INSERT INTO users (name, email, password_hash, role, farm_id) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([
           $_POST['name'],
           $_POST['email'],
           password_hash($_POST['password'], PASSWORD_DEFAULT),
           $role,
-          $_POST['farm_id'] ?? null
+          $farm_id
         ]);
         $_SESSION['flash_ok'] = 'Usuario creado exitosamente';
         break;
         
       case 'edit_user':
-        $updateData = [
-          $_POST['name'],
-          $_POST['email'],
-          $_POST['role'],
-          $_POST['farm_id'] ?? null,
-          $_POST['user_id']
-        ];
+        // Validar y normalizar farm_id
+        $farm_id = !empty($_POST['farm_id']) && trim($_POST['farm_id']) !== '' ? intval($_POST['farm_id']) : null;
         
-        if (!empty($_POST['password'])) {
-          $stmt = $pdo->prepare("UPDATE users SET name=?, email=?, password=?, role=?, farm_id=? WHERE id=?");
-          $updateData[2] = password_hash($_POST['password'], PASSWORD_DEFAULT);
-        } else {
-          $stmt = $pdo->prepare("UPDATE users SET name=?, email=?, role=?, farm_id=? WHERE id=?");
-          array_splice($updateData, 2, 1); // Remove password from array
+        // Si se proporciona un farm_id, verificar que existe
+        if ($farm_id !== null) {
+          $check_stmt = $pdo->prepare("SELECT id FROM farms WHERE id = ?");
+          $check_stmt->execute([$farm_id]);
+          if (!$check_stmt->fetch()) {
+            $_SESSION['flash_err'] = 'La finca seleccionada no existe';
+            break;
+          }
         }
         
-        $stmt->execute($updateData);
+        if (!empty($_POST['password'])) {
+          // Si hay nueva contraseña, actualizar también el password
+          $stmt = $pdo->prepare("UPDATE users SET name=?, email=?, password_hash=?, role=?, farm_id=? WHERE id=?");
+          $stmt->execute([
+            $_POST['name'],
+            $_POST['email'],
+            password_hash($_POST['password'], PASSWORD_DEFAULT),
+            $_POST['role'],
+            $farm_id,
+            $_POST['user_id']
+          ]);
+        } else {
+          // Si no hay nueva contraseña, mantener la actual
+          $stmt = $pdo->prepare("UPDATE users SET name=?, email=?, role=?, farm_id=? WHERE id=?");
+          $stmt->execute([
+            $_POST['name'],
+            $_POST['email'],
+            $_POST['role'],
+            $farm_id,
+            $_POST['user_id']
+          ]);
+        }
+        
         $_SESSION['flash_ok'] = 'Usuario actualizado exitosamente';
         break;
         
@@ -385,6 +613,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         break;
         
       case 'add_farm':
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'Permiso denegado'; break; }
         $stmt = $pdo->prepare("INSERT INTO farms (name, location) VALUES (?, ?)");
         $stmt->execute([
           $_POST['name'],
@@ -394,6 +623,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         break;
         
       case 'edit_farm':
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'Permiso denegado'; break; }
         $stmt = $pdo->prepare("UPDATE farms SET name=?, location=? WHERE id=?");
         $stmt->execute([
           $_POST['name'],
@@ -404,9 +634,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         break;
         
       case 'delete_farm':
-        $stmt = $pdo->prepare("DELETE FROM farms WHERE id = ?");
-        $stmt->execute([$_POST['farm_id']]);
-        $_SESSION['flash_ok'] = 'Finca eliminada exitosamente';
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'Permiso denegado'; break; }
+        
+        // Verificar si la finca tiene registros asociados
+        $checkStmt = $pdo->prepare("SELECT 
+          (SELECT COUNT(*) FROM animals WHERE farm_id = ?) as animal_count,
+          (SELECT COUNT(*) FROM users WHERE farm_id = ?) as user_count,
+          (SELECT COUNT(*) FROM lots WHERE farm_id = ?) as lot_count");
+        $checkStmt->execute([$_POST['farm_id'], $_POST['farm_id'], $_POST['farm_id']]);
+        $counts = $checkStmt->fetch();
+        
+        $totalAssociations = $counts['animal_count'] + $counts['user_count'] + $counts['lot_count'];
+        
+        // Eliminar la finca (las claves foráneas con ON DELETE SET NULL se encargarán de desasociar)
+        try {
+          $stmt = $pdo->prepare("DELETE FROM farms WHERE id = ?");
+          $stmt->execute([$_POST['farm_id']]);
+          
+          if ($totalAssociations > 0) {
+            $_SESSION['flash_ok'] = "Finca eliminada exitosamente. Se desasociaron $totalAssociations registro(s) (animales, usuarios, lotes) automáticamente.";
+          } else {
+            $_SESSION['flash_ok'] = 'Finca eliminada exitosamente.';
+          }
+        } catch (PDOException $e) {
+          // Si aún hay error de clave foránea, necesitamos actualizar las claves foráneas en la BD
+          $_SESSION['flash_err'] = 'Error al eliminar la finca. Es posible que necesites actualizar las claves foráneas en la base de datos. Error: ' . htmlspecialchars($e->getMessage());
+        }
+        break;
+
+      case 'add_lot_type':
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'Permiso denegado'; break; }
+        $name = trim(strtolower($_POST['name'] ?? ''));
+        if ($name === '') { $_SESSION['flash_err'] = 'Nombre de tipo requerido'; break; }
+        $stmt = $pdo->prepare("INSERT IGNORE INTO lot_types(name) VALUES (?)");
+        $stmt->execute([$name]);
+        $_SESSION['flash_ok'] = 'Tipo de lote agregado';
+        break;
+
+      case 'delete_lot_type':
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'Permiso denegado'; break; }
+        $stmt = $pdo->prepare("DELETE FROM lot_types WHERE name = ?");
+        $stmt->execute([$_POST['name']]);
+        $_SESSION[ 'flash_ok'] = 'Tipo de lote eliminado';
         break;
         
       case 'toggle_catalog_animal':
@@ -439,6 +708,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
               
               $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('animal', ?, ?, ?, 'pending')");
               $stmt->execute([$animal_id, $_SESSION['user']['id'], $animal['farm_id'] ?? null]);
+              
+              // Enviar correo de notificación
+              try {
+                send_nomination_email($animal_id, $_SESSION['user']['id'], $pdo);
+              } catch (Exception $e) {
+                error_log("Error al enviar correo de postulación: " . $e->getMessage());
+                // No interrumpir el flujo si falla el correo
+              }
+              
               $_SESSION['flash_ok'] = "Animal postulado para aprobación";
             }
           } else {
@@ -477,6 +755,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
               
               $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('animal', ?, ?, ?, 'pending') ON DUPLICATE KEY UPDATE status = 'pending'");
               $stmt->execute([$animal_id, $_SESSION['user']['id'], $animal['farm_id'] ?? null]);
+              
+              // Enviar correo de notificación (solo para la primera postulación para evitar spam)
+              if ($animal_id === $animal_ids[0]) {
+                try {
+                  send_nomination_email($animal_id, $_SESSION['user']['id'], $pdo);
+                } catch (Exception $e) {
+                  error_log("Error al enviar correo de postulación: " . $e->getMessage());
+                  // No interrumpir el flujo si falla el correo
+                }
+              }
             }
             $count = count($animal_ids);
             $_SESSION['flash_ok'] = "{$count} animales postulados para aprobación";
@@ -503,7 +791,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$nomination['item_id']]);
             $_SESSION['flash_ok'] = "Animal aprobado y agregado al catálogo";
           } else if ($nomination['item_type'] === 'lot') {
-            // Los lotes ya están visibles por defecto
+            // Para lotes, la visibilidad del catálogo depende de la aprobación
+            // (el catálogo muestra solo lotes con postulación aprobada)
             $_SESSION['flash_ok'] = "Lote aprobado para mostrar en catálogo";
           }
         }
@@ -519,12 +808,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         break;
         
       case 'add_lot':
+        // Calcular automáticamente el número de animales basándose en los seleccionados
+        $animal_count = 0;
+        if (!empty($_POST['animal_ids']) && is_array($_POST['animal_ids'])) {
+          $animal_count = count($_POST['animal_ids']);
+        }
+        
         $stmt = $pdo->prepare("INSERT INTO lots (name, description, total_price, animal_count, lot_type, status, farm_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([
           $_POST['name'],
           $_POST['description'] ?? null,
-          $_POST['total_price'],
-          $_POST['animal_count'] ?? 0,
+          0,
+          $animal_count,
           $_POST['lot_type'],
           $_POST['status'] ?? 'disponible',
           $_POST['farm_id'] ?? null,
@@ -533,14 +828,147 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $lot_id = $pdo->lastInsertId();
         
         // Agregar animales al lote si se especificaron
-        if (!empty($_POST['animal_ids'])) {
+        if (!empty($_POST['animal_ids']) && is_array($_POST['animal_ids'])) {
           foreach ($_POST['animal_ids'] as $animal_id) {
             $stmt = $pdo->prepare("INSERT INTO lot_animals (lot_id, animal_id) VALUES (?, ?)");
             $stmt->execute([$lot_id, $animal_id]);
           }
         }
         
-        $_SESSION['flash_ok'] = 'Lote creado exitosamente';
+        // Checkbox: publicar/postular inmediatamente
+        if (!empty($_POST['publish_or_postulate'])) {
+          if (is_admin_general()) {
+            // Crear postulación aprobada para cumplir con el filtro del catálogo
+            try {
+              $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('lot', ?, ?, ?, 'approved')");
+              $stmt->execute([$lot_id, $_SESSION['user']['id'], $_POST['farm_id']]);
+              $_SESSION['flash_ok'] = 'Lote creado y publicado en catálogo';
+            } catch (Throwable $e) {
+              $_SESSION['flash_ok'] = 'Lote creado (no se pudo publicar: ' . e($e->getMessage()) . ')';
+            }
+          } else if (is_admin_finca()) {
+            // Crear postulación pendiente
+            try {
+              $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('lot', ?, ?, ?, 'pending')");
+              $stmt->execute([$lot_id, $_SESSION['user']['id'], $_POST['farm_id']]);
+              $_SESSION['flash_ok'] = 'Lote creado y postulado para aprobación';
+            } catch (Throwable $e) {
+              $_SESSION['flash_ok'] = 'Lote creado (no se pudo postular: ' . e($e->getMessage()) . ')';
+            }
+          }
+        } else {
+          $_SESSION['flash_ok'] = 'Lote creado exitosamente';
+        }
+        break;
+
+      case 'toggle_catalog_lot':
+        $lot_id = (int)($_POST['lot_id'] ?? 0);
+        $publish = (int)($_POST['publish'] ?? 0);
+        if ($lot_id <= 0) { $_SESSION['flash_err'] = 'Lote inválido'; break; }
+
+        if ($publish) {
+          if (is_admin_general()) {
+            // Publicar: crear/aprobar nominación
+            $stmt = $pdo->prepare("SELECT id FROM nominations WHERE item_type = 'lot' AND item_id = ?");
+            $stmt->execute([$lot_id]);
+            $nom = $stmt->fetch();
+            if ($nom) {
+              $stmt = $pdo->prepare("UPDATE nominations SET status = 'approved', reviewed_by = ?, reviewed_at = NOW() WHERE id = ?");
+              $stmt->execute([$_SESSION['user']['id'], $nom['id']]);
+            } else {
+              // Obtener farm del lote
+              $stmt = $pdo->prepare("SELECT farm_id FROM lots WHERE id = ?");
+              $stmt->execute([$lot_id]);
+              $lotFarm = $stmt->fetch();
+              $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status, reviewed_by, reviewed_at) VALUES ('lot', ?, ?, ?, 'approved', ?, NOW())");
+              $stmt->execute([$lot_id, $_SESSION['user']['id'], $lotFarm['farm_id'] ?? null, $_SESSION['user']['id']]);
+            }
+            $_SESSION['flash_ok'] = 'Lote publicado en catálogo';
+          } else if (is_admin_finca()) {
+            // Postular pendiente
+            $stmt = $pdo->prepare("SELECT id, status FROM nominations WHERE item_type = 'lot' AND item_id = ?");
+            $stmt->execute([$lot_id]);
+            $nom = $stmt->fetch();
+            if ($nom) {
+              if ($nom['status'] !== 'pending') {
+                $stmt = $pdo->prepare("UPDATE nominations SET status = 'pending', proposed_by = ?, reviewed_by = NULL, reviewed_at = NULL WHERE id = ?");
+                $stmt->execute([$_SESSION['user']['id'], $nom['id']]);
+                $_SESSION['flash_ok'] = 'Lote republicado para aprobación';
+              } else {
+                $_SESSION['flash_err'] = 'El lote ya tiene una postulación pendiente';
+              }
+            } else {
+              $stmt = $pdo->prepare("SELECT farm_id FROM lots WHERE id = ?");
+              $stmt->execute([$lot_id]);
+              $lotFarm = $stmt->fetch();
+              $stmt = $pdo->prepare("INSERT INTO nominations (item_type, item_id, proposed_by, farm_id, status) VALUES ('lot', ?, ?, ?, 'pending')");
+              $stmt->execute([$lot_id, $_SESSION['user']['id'], $lotFarm['farm_id'] ?? null]);
+              $_SESSION['flash_ok'] = 'Lote postulado para aprobación';
+            }
+          }
+        } else {
+          // Solicitud de ocultar: solo admin_general
+          if (is_admin_general()) {
+            // Opción simple: marcar nominación como rechazada (o eliminarla)
+            $stmt = $pdo->prepare("UPDATE nominations SET status = 'rejected', reviewed_by = ?, reviewed_at = NOW(), notes = 'Ocultado por admin' WHERE item_type='lot' AND item_id = ?");
+            $stmt->execute([$_SESSION['user']['id'], $lot_id]);
+            $_SESSION['flash_ok'] = 'Lote ocultado del catálogo';
+          } else {
+            $_SESSION['flash_err'] = 'No tienes permisos para ocultar lotes';
+          }
+        }
+        break;
+
+      case 'remove_animal_from_lot':
+        $lot_id = (int)($_POST['lot_id'] ?? 0);
+        $animal_id = (int)($_POST['animal_id'] ?? 0);
+        if ($lot_id <= 0 || $animal_id <= 0) { $_SESSION['flash_err'] = 'Datos inválidos'; break; }
+        $stmt = $pdo->prepare("DELETE FROM lot_animals WHERE lot_id = ? AND animal_id = ?");
+        $stmt->execute([$lot_id, $animal_id]);
+        $_SESSION['flash_ok'] = 'Animal removido del lote';
+        // Redirigir a la edición del mismo lote para refrescar
+        header('Location: admin.php?edit_lot=' . $lot_id);
+        exit;
+
+      case 'bulk_toggle_lots':
+        if (!is_admin_general()) { $_SESSION['flash_err'] = 'No autorizado'; break; }
+        $publish = (int)($_POST['publish'] ?? 0);
+        $lot_ids = $_POST['lot_ids'] ?? [];
+        if (empty($lot_ids)) {
+          // fallback: usar todos los lotes existentes
+          $ids = array_map(fn($l) => $l['id'], $lots);
+          $lot_ids = $ids;
+        }
+        if ($publish) {
+          // Aprobar/crear nominaciones aprobadas para estos lotes
+          foreach ($lot_ids as $lid) {
+            $lid = (int)$lid;
+            if ($lid <= 0) continue;
+            $stmt = $pdo->prepare("SELECT id FROM nominations WHERE item_type='lot' AND item_id=?");
+            $stmt->execute([$lid]);
+            $nom = $stmt->fetch();
+            if ($nom) {
+              $stmt = $pdo->prepare("UPDATE nominations SET status='approved', reviewed_by=?, reviewed_at=NOW() WHERE id=?");
+              $stmt->execute([$_SESSION['user']['id'], $nom['id']]);
+            } else {
+              $stmt = $pdo->prepare("SELECT farm_id FROM lots WHERE id=?");
+              $stmt->execute([$lid]);
+              $lotFarm = $stmt->fetch();
+              $stmt = $pdo->prepare("INSERT INTO nominations (item_type,item_id,proposed_by,farm_id,status,reviewed_by,reviewed_at) VALUES ('lot',?,?,?,?, 'approved', NOW())");
+              $stmt->execute([$lid, $_SESSION['user']['id'], $lotFarm['farm_id'] ?? null, $_SESSION['user']['id']]);
+            }
+          }
+          $_SESSION['flash_ok'] = 'Lotes publicados en catálogo';
+        } else {
+          // Marcar nominaciones como rechazadas para ocultar
+          foreach ($lot_ids as $lid) {
+            $lid = (int)$lid;
+            if ($lid <= 0) continue;
+            $stmt = $pdo->prepare("UPDATE nominations SET status='rejected', reviewed_by=?, reviewed_at=NOW(), notes='Ocultado por admin' WHERE item_type='lot' AND item_id=?");
+            $stmt->execute([$_SESSION['user']['id'], $lid]);
+          }
+          $_SESSION['flash_ok'] = 'Lotes ocultados del catálogo';
+        }
         break;
         
       case 'edit_lot':
@@ -548,7 +976,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([
           $_POST['name'],
           $_POST['description'] ?? null,
-          $_POST['total_price'],
+          0,
           $_POST['lot_type'],
           $_POST['status'],
           $_POST['farm_id'] ?? null,
@@ -569,7 +997,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // Verificar que se subieron archivos
         if (empty($_FILES['photos']['name'][0])) {
-          $_SESSION['flash_error'] = 'Debe seleccionar al menos una foto';
+          $_SESSION['flash_err'] = 'Debe seleccionar al menos una foto';
           break;
         }
         
@@ -585,7 +1013,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $fileCount = count($_FILES['photos']['name']);
         if ($fileCount > $maxPhotos) {
-          $_SESSION['flash_error'] = "Máximo {$maxPhotos} fotos permitidas";
+          $_SESSION['flash_err'] = "Máximo {$maxPhotos} fotos permitidas";
           break;
         }
         
@@ -598,13 +1026,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           
           // Validar tipo de archivo
           if (!in_array($fileType, $allowedTypes)) {
-            $_SESSION['flash_error'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
+            $_SESSION['flash_err'] = 'Solo se permiten archivos JPG, PNG, GIF y WebP';
             break 2;
           }
           
           // Validar tamaño
           if ($fileSize > $maxFileSize) {
-            $_SESSION['flash_error'] = 'El archivo es demasiado grande (máximo 5MB)';
+            $_SESSION['flash_err'] = 'El archivo es demasiado grande (máximo 5MB)';
             break 2;
           }
           
@@ -691,6 +1119,216 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         $_SESSION['flash_ok'] = 'Foto principal actualizada';
         break;
+        
+      case 'update_quote_status':
+        if (!is_admin_general()) {
+          $_SESSION['flash_err'] = 'No tienes permisos para realizar esta acción';
+          break;
+        }
+        
+        $quote_id = intval($_POST['quote_id'] ?? 0);
+        $new_status = $_POST['new_status'] ?? '';
+        
+        if (!in_array($new_status, ['pendiente', 'en_proceso', 'respondida'])) {
+          $_SESSION['flash_err'] = 'Estado inválido';
+          break;
+        }
+        
+        // Obtener información de la cotización
+        $stmt = $pdo->prepare("SELECT * FROM quotes WHERE id = ?");
+        $stmt->execute([$quote_id]);
+        $quote = $stmt->fetch();
+        
+        if (!$quote) {
+          $_SESSION['flash_err'] = 'Cotización no encontrada';
+          break;
+        }
+        
+        // Actualizar estado
+        $stmt = $pdo->prepare("UPDATE quotes SET status = ?, updated_by = ?, updated_at = NOW() WHERE id = ?");
+        $stmt->execute([$new_status, $_SESSION['user']['id'], $quote_id]);
+        
+        // Enviar correo de notificación al cliente
+        require_once __DIR__ . '/../app/email.php';
+        
+        $status_names = [
+          'pendiente' => 'Pendiente',
+          'en_proceso' => 'En Proceso',
+          'respondida' => 'Respondida'
+        ];
+        
+        $status_messages = [
+          'pendiente' => 'Tu solicitud de cotización está pendiente de revisión.',
+          'en_proceso' => 'Estamos procesando tu solicitud de cotización y te contactaremos pronto.',
+          'respondida' => 'Hemos respondido a tu solicitud de cotización. Por favor, revisa los detalles a continuación.'
+        ];
+        
+        $email_subject = "Actualización de Estado - Cotización #$quote_id - Rc El Bosque";
+        $email_body = "
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { background: #1a4720; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+                .content { background: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+                .status-box { background: white; padding: 15px; margin: 15px 0; border-left: 3px solid #1a4720; }
+                .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+            </style>
+        </head>
+        <body>
+            <div class='container'>
+                <div class='header'>
+                    <h2>📋 Actualización de Cotización</h2>
+                </div>
+                <div class='content'>
+                    <p>Estimado/a <strong>" . htmlspecialchars($quote['customer_name']) . "</strong>,</p>
+                    
+                    <p>Te informamos que el estado de tu solicitud de cotización ha sido actualizado:</p>
+                    
+                    <div class='status-box'>
+                        <strong>Nuevo Estado:</strong> " . htmlspecialchars($status_names[$new_status]) . "<br>
+                        <strong>Cotización #:</strong> $quote_id<br>
+                        <strong>Fecha de Actualización:</strong> " . date('d/m/Y H:i') . "
+                    </div>
+                    
+                    <p>" . htmlspecialchars($status_messages[$new_status]) . "</p>
+                    
+                    <p>Si tienes alguna pregunta, no dudes en contactarnos.</p>
+                </div>
+                <div class='footer'>
+                    <p>Este es un correo automático del sistema Rc El Bosque.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        ";
+        
+        $email_sent = send_email($quote['customer_email'], $email_subject, $email_body);
+        
+        if ($email_sent) {
+          $_SESSION['flash_ok'] = "Estado de cotización actualizado y correo enviado al cliente";
+        } else {
+          $_SESSION['flash_ok'] = "Estado de cotización actualizado (error al enviar correo)";
+        }
+        break;
+        
+      case 'add_carousel_image':
+        if (!is_admin_general()) {
+          $_SESSION['flash_err'] = 'No tienes permisos para realizar esta acción';
+          break;
+        }
+        
+        if (empty($_FILES['carousel_image']['name'])) {
+          $_SESSION['flash_err'] = 'Debes seleccionar una imagen';
+          break;
+        }
+        
+        $title = trim($_POST['title'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $sort_order = intval($_POST['sort_order'] ?? 0);
+        
+        // Crear directorio si no existe
+        $uploadDir = __DIR__ . '/uploads/carousel/';
+        if (!file_exists($uploadDir)) {
+          mkdir($uploadDir, 0755, true);
+        }
+        
+        $allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+        $maxFileSize = 10 * 1024 * 1024; // 10MB
+        
+        $file = $_FILES['carousel_image'];
+        
+        if (!in_array($file['type'], $allowedTypes)) {
+          $_SESSION['flash_err'] = 'Tipo de archivo no permitido. Solo se permiten imágenes (JPG, PNG, GIF, WEBP)';
+          break;
+        }
+        
+        if ($file['size'] > $maxFileSize) {
+          $_SESSION['flash_err'] = 'El archivo es demasiado grande. Máximo 10MB';
+          break;
+        }
+        
+        // Generar nombre único
+        $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
+        $filename = 'carousel_' . time() . '_' . uniqid() . '.' . $extension;
+        $filePath = $uploadDir . $filename;
+        
+        if (move_uploaded_file($file['tmp_name'], $filePath)) {
+          $relativePath = 'uploads/carousel/' . $filename;
+          
+          $stmt = $pdo->prepare("
+            INSERT INTO carousel_images (filename, file_path, title, description, sort_order, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+          ");
+          $stmt->execute([
+            $filename,
+            $relativePath,
+            $title ?: null,
+            $description ?: null,
+            $sort_order,
+            $_SESSION['user']['id']
+          ]);
+          
+          $_SESSION['flash_ok'] = 'Imagen del carrusel agregada exitosamente';
+        } else {
+          $_SESSION['flash_err'] = 'Error al subir la imagen';
+        }
+        break;
+        
+      case 'delete_carousel_image':
+        if (!is_admin_general()) {
+          $_SESSION['flash_err'] = 'No tienes permisos para realizar esta acción';
+          break;
+        }
+        
+        $image_id = intval($_POST['image_id'] ?? 0);
+        
+        // Obtener información de la imagen
+        $stmt = $pdo->prepare("SELECT file_path FROM carousel_images WHERE id = ?");
+        $stmt->execute([$image_id]);
+        $image = $stmt->fetch();
+        
+        if ($image) {
+          // Eliminar archivo físico
+          $filePath = __DIR__ . '/' . $image['file_path'];
+          if (file_exists($filePath)) {
+            unlink($filePath);
+          }
+          
+          // Eliminar registro de BD
+          $stmt = $pdo->prepare("DELETE FROM carousel_images WHERE id = ?");
+          $stmt->execute([$image_id]);
+          
+          $_SESSION['flash_ok'] = 'Imagen del carrusel eliminada exitosamente';
+        } else {
+          $_SESSION['flash_err'] = 'Imagen no encontrada';
+        }
+        break;
+        
+      case 'update_carousel_image':
+        if (!is_admin_general()) {
+          $_SESSION['flash_err'] = 'No tienes permisos para realizar esta acción';
+          break;
+        }
+        
+        $image_id = intval($_POST['image_id'] ?? 0);
+        $title = trim($_POST['title'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $sort_order = intval($_POST['sort_order'] ?? 0);
+        $is_active = isset($_POST['is_active']) ? 1 : 0;
+        
+        $stmt = $pdo->prepare("
+          UPDATE carousel_images 
+          SET title = ?, description = ?, sort_order = ?, is_active = ?, updated_at = NOW()
+          WHERE id = ?
+        ");
+        $stmt->execute([$title ?: null, $description ?: null, $sort_order, $is_active, $image_id]);
+        
+        $_SESSION['flash_ok'] = 'Imagen del carrusel actualizada exitosamente';
+        break;
     }
     
     header('Location: admin.php');
@@ -722,8 +1360,26 @@ if (isset($_GET['edit_user'])) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Panel Administrativo - AgroGan</title>
+  <title>Panel Administrativo - Rc El Bosque</title>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <!-- Corrección de errores de validación CSS de Font Awesome -->
+  <style>
+    /* Corrección para errores de validación CSS del W3C */
+    /* Estos estilos corrigen los valores problemáticos sin cambiar la apariencia visual */
+    .fa-beat,
+    .fa-bounce,
+    .fa-beat-fade,
+    .fa-fade,
+    .fa-flip,
+    .fa-shake,
+    .fa-spin {
+      animation-delay: 0s;
+    }
+    
+    .fa-rotate-by {
+      transform: rotate(0deg);
+    }
+  </style>
   <style>
     :root {
       --primary-green: #2d5a27;
@@ -1202,7 +1858,7 @@ if (isset($_GET['edit_user'])) {
     <!-- Sidebar -->
     <aside class="admin-sidebar">
       <div class="sidebar-header">
-        <h1><i class="fas fa-shield-alt"></i> AgroGan Admin</h1>
+        <h1><i class="fas fa-shield-alt"></i> Rc El Bosque Admin</h1>
         <div class="user-info">
           <i class="fas fa-user"></i> <?= e($user['name']) ?>
           <br>
@@ -1244,6 +1900,10 @@ if (isset($_GET['edit_user'])) {
             <i class="fas fa-paper-plane"></i>
             Postulaciones
           </a>
+          <a href="#" class="nav-item" onclick="showSection('quotes')">
+            <i class="fas fa-calculator"></i>
+            Cotizaciones
+          </a>
           <?php endif; ?>
           <?php if(is_admin_finca()): ?>
           <a href="#" class="nav-item" onclick="showSection('users')">
@@ -1269,6 +1929,10 @@ if (isset($_GET['edit_user'])) {
           <a href="#" class="nav-item" onclick="showSection('reports')">
             <i class="fas fa-chart-line"></i>
             Reportes
+          </a>
+          <a href="#" class="nav-item" onclick="showSection('carousel')">
+            <i class="fas fa-images"></i>
+            Carrusel Principal
           </a>
           <a href="#" class="nav-item" onclick="showSection('settings')">
             <i class="fas fa-cog"></i>
@@ -1366,7 +2030,7 @@ if (isset($_GET['edit_user'])) {
           
           <div class="admin-card">
             <h3><i class="fas fa-tachometer-alt"></i> Resumen del Sistema</h3>
-            <p>Bienvenido al panel administrativo de AgroGan. Desde aquí puedes gestionar todos los aspectos del sistema.</p>
+            <p>Bienvenido al panel administrativo de Rc El Bosque. Desde aquí puedes gestionar todos los aspectos del sistema.</p>
             
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 2rem;">
               <div style="background: var(--gray-50); padding: 1.5rem; border-radius: 12px; text-align: center;">
@@ -1411,15 +2075,27 @@ if (isset($_GET['edit_user'])) {
         </div>
       <?php endif; ?>
             
-            <form method="POST" class="form-grid" enctype="multipart/form-data">
+            <form method="POST" class="form-grid" enctype="multipart/form-data" id="animal_form">
               <input type="hidden" name="action" value="<?= $editAnimal ? 'edit_animal' : 'add_animal' ?>">
         <?php if ($editAnimal): ?>
                 <input type="hidden" name="animal_id" value="<?= $editAnimal['id'] ?>">
         <?php endif; ?>
               
               <div class="form-group">
-                <label for="name">Nombre del Animal *</label>
-                <input type="text" id="name" name="name" value="<?= e($editAnimal['name'] ?? '') ?>" required>
+                <label for="tag_code">Código de Animal *</label>
+                <input type="text" id="tag_code" name="tag_code" value="<?= e($editAnimal['tag_code'] ?? '') ?>" 
+                       required placeholder="Ej: ANIMAL-001" maxlength="80"
+                       oninput="validateTagCode(this)">
+                <small id="tag-code-error" style="color: var(--danger); display: none; margin-top: 0.25rem;"></small>
+                <small style="color: var(--gray-500); font-size: 0.85em; display: block; margin-top: 0.25rem;">
+                  Código único de identificación del animal (obligatorio)
+                </small>
+              </div>
+              
+              <div class="form-group">
+                <label for="animal_name">Nombre del Animal</label>
+                <input type="text" id="animal_name" name="name" value="<?= e($editAnimal['name'] ?? '') ?>" 
+                       placeholder="Opcional">
               </div>
               
               <!-- Especie y Raza fijas: Bovino - Brahman -->
@@ -1444,7 +2120,8 @@ if (isset($_GET['edit_user'])) {
               
               <div class="form-group">
                 <label for="birth_date">Fecha de Nacimiento</label>
-                <input type="date" id="birth_date" name="birth_date" value="<?= e($editAnimal['birth_date'] ?? '') ?>">
+                <input type="date" id="birth_date" name="birth_date" value="<?= e($editAnimal['birth_date'] ?? '') ?>" max="<?= date('Y-m-d') ?>">
+                <small style="color: var(--gray-600); font-size: 0.875rem;">No se pueden registrar fechas futuras</small>
               </div>
               
               <div class="form-group">
@@ -1458,8 +2135,10 @@ if (isset($_GET['edit_user'])) {
               </div>
               
               <div class="form-group">
-                <label for="weight">Peso (kg)</label>
-                <input type="number" id="weight" name="weight" step="0.1" value="<?= e($editAnimal['weight'] ?? '') ?>">
+                <label for="weight">Peso (kg) <span style="color: var(--gray-500); font-size: 0.85em;">(entre 20 y 1000 kg)</span></label>
+                <input type="number" id="weight" name="weight" step="0.1" min="20" max="1000" value="<?= e($editAnimal['weight'] ?? '') ?>" 
+                       oninput="validateWeight(this)">
+                <small id="weight-error" style="color: var(--danger); display: none; margin-top: 0.25rem;"></small>
               </div>
               
               <div class="form-group">
@@ -1468,8 +2147,8 @@ if (isset($_GET['edit_user'])) {
               </div>
               
               <div class="form-group">
-                <label for="farm_id">Finca</label>
-                <select id="farm_id" name="farm_id">
+                <label for="animal_farm_id">Finca</label>
+                <select id="animal_farm_id" name="farm_id">
                   <option value="">Seleccionar finca</option>
                   <?php foreach ($farms as $farm): ?>
                     <option value="<?= $farm['id'] ?>" <?= ($editAnimal['farm_id'] ?? '') == $farm['id'] ? 'selected' : '' ?>>
@@ -1504,7 +2183,7 @@ if (isset($_GET['edit_user'])) {
               </div>
               
               <div class="form-group" style="grid-column: 1 / -1;">
-                <button type="submit" class="btn btn-primary">
+                <button type="submit" class="btn btn-primary" id="animal_submit">
                   <i class="fas fa-save"></i> <?= $editAnimal ? 'Actualizar Animal' : 'Registrar Animal' ?>
                 </button>
         </div>
@@ -1666,9 +2345,7 @@ if (isset($_GET['edit_user'])) {
               <button class="btn btn-sm" onclick="toggleAllAnimals(false)">
                 <i class="fas fa-eye-slash"></i> Ocultar Todos
               </button>
-              <button class="btn btn-sm" onclick="toggleAnimalsWithPrice()">
-                <i class="fas fa-dollar-sign"></i> Solo con Precio
-              </button>
+              
             </div>
             <?php endif; ?>
             
@@ -1728,47 +2405,190 @@ if (isset($_GET['edit_user'])) {
                       <a href="admin.php?edit_animal=<?= $animal['id'] ?>" class="btn btn-sm btn-secondary">
                         <i class="fas fa-edit"></i> Editar
                       </a>
+                      <form method="POST" style="display: inline;" onsubmit="return confirm('¿Eliminar este animal? Esta acción no se puede deshacer.')">
+                        <input type="hidden" name="action" value="delete_animal">
+                        <input type="hidden" name="animal_id" value="<?= $animal['id'] ?>">
+                        <button type="submit" class="btn btn-sm btn-danger">
+                          <i class="fas fa-trash"></i> Eliminar
+                        </button>
+                      </form>
             </td>
           </tr>
           <?php endforeach; ?>
         </tbody>
       </table>
             
-            <!-- Bulk Actions -->
+            
+          </div>
+          
+          <!-- Lots Visibility Control (moved inside Catalog section) -->
+          <div class="admin-card" style="margin-top: 2rem;">
             <?php if (is_admin_general()): ?>
-            <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--gray-200);">
-              <h4><i class="fas fa-tasks"></i> Acciones en Lote</h4>
-              <p style="color: var(--gray-600); margin-bottom: 1rem;">Selecciona múltiples animales usando las casillas de verificación y aplica acciones en lote.</p>
-              
-              <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                <button class="btn btn-sm" onclick="bulkToggleVisibility(true)">
-                  <i class="fas fa-eye"></i> Mostrar Seleccionados
+            <h3><i class="fas fa-layer-group"></i> Control de Visibilidad de Lotes</h3>
+            <p>Publica u oculta lotes del catálogo público.</p>
+            <div style="display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap;">
+              <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="bulk_toggle_lots">
+                <input type="hidden" name="publish" value="1">
+                <?php foreach ($lots as $lot): ?>
+                  <input type="hidden" name="lot_ids[]" value="<?= $lot['id'] ?>">
+                <?php endforeach; ?>
+                <button type="submit" class="btn btn-sm">
+                  <i class="fas fa-eye"></i> Hacer Todos Visibles
                 </button>
-                <button class="btn btn-sm" onclick="bulkToggleVisibility(false)">
-                  <i class="fas fa-eye-slash"></i> Ocultar Seleccionados
+              </form>
+              <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="bulk_toggle_lots">
+                <input type="hidden" name="publish" value="0">
+                <?php foreach ($lots as $lot): ?>
+                  <input type="hidden" name="lot_ids[]" value="<?= $lot['id'] ?>">
+                <?php endforeach; ?>
+                <button type="submit" class="btn btn-sm">
+                  <i class="fas fa-eye-slash"></i> Ocultar Todos
                 </button>
-                <button class="btn btn-sm" onclick="clearSelection()">
-                  <i class="fas fa-times"></i> Limpiar Selección
-                </button>
-    </div>
+              </form>
             </div>
             <?php else: ?>
-            <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--gray-200);">
-              <h4><i class="fas fa-paper-plane"></i> Acciones en Lote</h4>
-              <p style="color: var(--gray-600); margin-bottom: 1rem;">Selecciona múltiples animales usando las casillas de verificación y postúlalos para el catálogo público.</p>
-              
-              <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                <button class="btn btn-sm btn-primary" onclick="bulkToggleVisibility(true)">
-                  <i class="fas fa-paper-plane"></i> Postular Seleccionados
-                </button>
-                <button class="btn btn-sm" onclick="clearSelection()">
-                  <i class="fas fa-times"></i> Limpiar Selección
-                </button>
-              </div>
-            </div>
+            <h3><i class="fas fa-paper-plane"></i> Postular Lotes al Catálogo</h3>
+            <p>Postula tus lotes para revisión del administrador general.</p>
             <?php endif; ?>
+
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Nombre</th>
+                  <th>Tipo</th>
+                  <th>Animales</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($lots as $lot): ?>
+                <tr>
+                  <td><?= $lot['id'] ?></td>
+                  <td><?= e($lot['name']) ?></td>
+                  <td><?= ucfirst(e($lot['lot_type'])) ?></td>
+                  <td><?= (int)($lot['actual_animal_count'] ?? 0) ?></td>
+                  <td>
+                    <?php if (in_array($lot['id'], $approvedLotIds)): ?>
+                      <span style="color: var(--success); font-weight: 600;"><i class="fas fa-eye"></i> Visible</span>
+                    <?php elseif (in_array($lot['id'], $pendingLotIds)): ?>
+                      <span style="color: var(--warning);"><i class="fas fa-clock"></i> Pendiente</span>
+                    <?php else: ?>
+                      <span style="color: var(--gray-400);"><i class="fas fa-eye-slash"></i> No publicado</span>
+                    <?php endif; ?>
+                  </td>
+                  <td>
+                    <?php if (is_admin_general()): ?>
+                      <form method="POST" style="display:inline-block;">
+                        <input type="hidden" name="action" value="toggle_catalog_lot">
+                        <input type="hidden" name="lot_id" value="<?= $lot['id'] ?>">
+                        <input type="hidden" name="publish" value="<?= in_array($lot['id'], $approvedLotIds) ? '0' : '1' ?>">
+                        <button type="submit" class="btn btn-sm <?= in_array($lot['id'], $approvedLotIds) ? 'btn-secondary' : 'btn-primary' ?>">
+                          <i class="fas fa-<?= in_array($lot['id'], $approvedLotIds) ? 'eye-slash' : 'eye' ?>"></i>
+                          <?= in_array($lot['id'], $approvedLotIds) ? 'Ocultar' : 'Publicar' ?>
+                        </button>
+                      </form>
+                      <form method="POST" style="display:inline-block;" onsubmit="return confirm('¿Eliminar este lote? Esta acción no se puede deshacer.')">
+                        <input type="hidden" name="action" value="delete_lot">
+                        <input type="hidden" name="lot_id" value="<?= $lot['id'] ?>">
+                        <button type="submit" class="btn btn-sm btn-danger">
+                          <i class="fas fa-trash"></i> Eliminar
+                        </button>
+                      </form>
+                    <?php else: ?>
+                      <form method="POST" style="display:inline-block;">
+                        <input type="hidden" name="action" value="toggle_catalog_lot">
+                        <input type="hidden" name="lot_id" value="<?= $lot['id'] ?>">
+                        <input type="hidden" name="publish" value="1">
+                        <button type="submit" class="btn btn-sm <?= in_array($lot['id'], $pendingLotIds) ? 'btn-secondary' : 'btn-primary' ?>" <?= in_array($lot['id'], $pendingLotIds) ? 'disabled' : '' ?>>
+                          <i class="fas fa-paper-plane"></i> <?= in_array($lot['id'], $pendingLotIds) ? 'Postulado' : 'Postular' ?>
+                        </button>
+                      </form>
+                      <form method="POST" style="display:inline-block;" onsubmit="return confirm('¿Eliminar este lote? Esta acción no se puede deshacer.')">
+                        <input type="hidden" name="action" value="delete_lot">
+                        <input type="hidden" name="lot_id" value="<?= $lot['id'] ?>">
+                        <button type="submit" class="btn btn-sm btn-danger">
+                          <i class="fas fa-trash"></i> Eliminar
+                        </button>
+                      </form>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
           </div>
         </div>
+
+        <!-- Published in Catalog Overview -->
+        <div class="content-section">
+          <div class="admin-card">
+            <h3><i class="fas fa-store"></i> Publicados en Catálogo</h3>
+            <div class="grid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+              <div>
+                <h4 style="margin-top:0; color: var(--primary-green);"><i class="fas fa-cow"></i> Animales (<?= count($publishedAnimals) ?>)</h4>
+                <?php if (empty($publishedAnimals)): ?>
+                  <p style="color: var(--gray-600);">No hay animales publicados.</p>
+                <?php else: ?>
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Nombre</th>
+                      <th>Género</th>
+                      <th>Finca</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                  <?php foreach ($publishedAnimals as $pa): ?>
+                    <tr>
+                      <td><?= $pa['id'] ?></td>
+                      <td><?= e($pa['name']) ?></td>
+                      <td><?= e($pa['gender'] ?? 'N/A') ?></td>
+                      <td><?= e($pa['farm_name'] ?? 'N/A') ?></td>
+                    </tr>
+                  <?php endforeach; ?>
+                  </tbody>
+                </table>
+                <?php endif; ?>
+              </div>
+              <div>
+                <h4 style="margin-top:0; color: #8B5CF6;"><i class="fas fa-layer-group"></i> Lotes (<?= count($publishedLots) ?>)</h4>
+                <?php if (empty($publishedLots)): ?>
+                  <p style="color: var(--gray-600);">No hay lotes publicados.</p>
+                <?php else: ?>
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Nombre</th>
+                      <th>Tipo</th>
+                      <th>Animales</th>
+                      <th>Finca</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                  <?php foreach ($publishedLots as $pl): ?>
+                    <tr>
+                      <td><?= $pl['id'] ?></td>
+                      <td><?= e($pl['name']) ?></td>
+                      <td><?= ucfirst(e($pl['lot_type'])) ?></td>
+                      <td><?= (int)($pl['animal_count'] ?? 0) ?></td>
+                      <td><?= e($pl['farm_name'] ?? 'N/A') ?></td>
+                    </tr>
+                  <?php endforeach; ?>
+                  </tbody>
+                </table>
+                <?php endif; ?>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        
 
         <!-- Lots Section -->
         <div id="lots-section" class="content-section">
@@ -1780,34 +2600,23 @@ if (isset($_GET['edit_user'])) {
               <input type="hidden" name="action" value="add_lot">
               
               <div class="form-group">
-                <label for="name">Nombre del Lote *</label>
-                <input type="text" id="name" name="name" required placeholder="Ej: Lote de Vacas Holstein">
+                <label for="lot_name">Nombre del Lote *</label>
+                <input type="text" id="lot_name" name="name" required placeholder="Ej: Lote de Vacas Holstein">
               </div>
               
               <div class="form-group">
-                <label for="lot_type">Tipo de Lote *</label>
-                <select id="lot_type" name="lot_type" required>
-                  <option value="">Seleccionar tipo</option>
-                  <option value="venta">Venta</option>
-                  <option value="reproduccion">Reproducción</option>
-                  <option value="engorde">Engorde</option>
-                  <option value="leche">Leche</option>
-                </select>
+              <label for="lot_type">Tipo de Lote *</label>
+              <select id="lot_type" name="lot_type" required>
+                <option value="">Seleccionar tipo</option>
+                <?php foreach (($lotTypes ?? []) as $type): ?>
+                  <option value="<?= e($type) ?>"><?= ucfirst(e($type)) ?></option>
+                <?php endforeach; ?>
+              </select>
               </div>
               
               <div class="form-group">
-                <label for="total_price">Precio Total del Lote *</label>
-                <input type="number" id="total_price" name="total_price" step="0.01" required placeholder="0.00">
-              </div>
-              
-              <div class="form-group">
-                <label for="animal_count">Número de Animales</label>
-                <input type="number" id="animal_count" name="animal_count" min="1" placeholder="Cantidad de animales">
-              </div>
-              
-              <div class="form-group">
-                <label for="farm_id">Finca</label>
-                <select id="farm_id" name="farm_id">
+                <label for="lot_farm_id">Finca</label>
+                <select id="lot_farm_id" name="farm_id">
                   <option value="">Seleccionar finca</option>
                   <?php foreach ($farms as $farm): ?>
                     <option value="<?= $farm['id'] ?>"><?= e($farm['name']) ?></option>
@@ -1816,19 +2625,114 @@ if (isset($_GET['edit_user'])) {
               </div>
               
               <div class="form-group" style="grid-column: 1 / -1;">
-                <label for="description">Descripción del Lote</label>
-                <textarea id="description" name="description" rows="3" placeholder="Describe las características del lote..."></textarea>
+                <label for="lot_description">Descripción del Lote</label>
+                <textarea id="lot_description" name="description" rows="3" placeholder="Describe las características del lote..."></textarea>
               </div>
               
+              <div class="form-group" style="grid-column: 1 / -1; display:flex; align-items:center; gap:.5rem;">
+                <input type="checkbox" id="publish_or_postulate" name="publish_or_postulate" value="1">
+                <?php if (is_admin_general()): ?>
+                  <label for="publish_or_postulate" style="margin:0;">Publicar inmediatamente en catálogo</label>
+                <?php else: ?>
+                  <label for="publish_or_postulate" style="margin:0;">Postular para catálogo tras crear</label>
+                <?php endif; ?>
+              </div>
+
               <div class="form-group" style="grid-column: 1 / -1;">
                 <label>Animales Disponibles para el Lote</label>
-                <div style="max-height: 200px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: 8px; padding: 1rem;">
+                <div style="margin-bottom: 0.5rem; padding: 0.75rem; background: var(--primary-green); color: white; border-radius: 8px; font-weight: 600; display: flex; align-items: center; gap: 0.5rem;">
+                  <i class="fas fa-cow"></i>
+                  <span id="selected-animals-count">0</span> <span id="selected-animals-label">animales seleccionados</span>
+                </div>
+                
+                <!-- Búsqueda y Filtros -->
+                <div style="margin-bottom: 1rem; padding: 1rem; background: var(--gray-50); border-radius: 8px; border: 1px solid var(--gray-200);">
+                  <div style="margin-bottom: 1rem;">
+                    <label for="animal-search" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                      <i class="fas fa-search"></i> Buscar Animal
+                    </label>
+                    <input type="text" id="animal-search" placeholder="Buscar por nombre, arete, especie, raza..." style="width: 100%; padding: 0.75rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.95rem;" onkeyup="filterAnimals()">
+                  </div>
+                  
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                    <div>
+                      <label for="filter-species" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Especie</label>
+                      <select id="filter-species" onchange="filterAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                        <option value="">Todas</option>
+                        <?php 
+                        $uniqueSpecies = array_unique(array_column($animals, 'species_name'));
+                        foreach ($uniqueSpecies as $spec): 
+                          if (!empty($spec)):
+                        ?>
+                          <option value="<?= e($spec) ?>"><?= e($spec) ?></option>
+                        <?php 
+                          endif;
+                        endforeach; 
+                        ?>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label for="filter-breed" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Raza</label>
+                      <select id="filter-breed" onchange="filterAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                        <option value="">Todas</option>
+                        <?php 
+                        $uniqueBreeds = array_unique(array_column($animals, 'breed_name'));
+                        foreach ($uniqueBreeds as $br): 
+                          if (!empty($br)):
+                        ?>
+                          <option value="<?= e($br) ?>"><?= e($br) ?></option>
+                        <?php 
+                          endif;
+                        endforeach; 
+                        ?>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label for="filter-gender" style="display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Género</label>
+                      <select id="filter-gender" onchange="filterAnimals()" style="width: 100%; padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.9rem;">
+                        <option value="">Todos</option>
+                        <option value="macho">Macho</option>
+                        <option value="hembra">Hembra</option>
+                        <option value="indefinido">Indefinido</option>
+                      </select>
+                    </div>
+                    
+                    <div style="display: flex; align-items: flex-end;">
+                      <button type="button" onclick="clearAnimalFilters()" class="btn btn-secondary" style="width: 100%; padding: 0.5rem;">
+                        <i class="fas fa-times"></i> Limpiar Filtros
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- Lista de Animales -->
+                <div id="animals-container" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--gray-300); border-radius: 8px; padding: 1rem;">
                   <?php foreach ($animals as $animal): ?>
-                    <label style="display: block; margin-bottom: 0.5rem;">
-                      <input type="checkbox" name="animal_ids[]" value="<?= $animal['id'] ?>">
-                      <?= e($animal['name']) ?> - <?= e($animal['species_name'] ?? 'N/A') ?> (<?= e($animal['gender'] ?? 'N/A') ?>)
+                    <label class="animal-item" style="display: block; margin-bottom: 0.5rem; padding: 0.5rem; border-radius: 4px; transition: background 0.2s;" 
+                           data-name="<?= strtolower(e($animal['name'])) ?>"
+                           data-tag-code="<?= strtolower(e($animal['tag_code'] ?? '')) ?>"
+                           data-species="<?= strtolower(e($animal['species_name'] ?? '')) ?>"
+                           data-breed="<?= strtolower(e($animal['breed_name'] ?? '')) ?>"
+                           data-gender="<?= strtolower(e($animal['gender'] ?? '')) ?>">
+                      <input type="checkbox" name="animal_ids[]" value="<?= $animal['id'] ?>" class="lot-animal-checkbox" onchange="updateAnimalCount()">
+                      <span style="margin-left: 0.5rem;">
+                        <strong><?= e($animal['name']) ?></strong>
+                        <?php if (!empty($animal['tag_code'])): ?>
+                          <span style="color: var(--gray-600); font-size: 0.85rem;">(Arete: <?= e($animal['tag_code']) ?>)</span>
+                        <?php endif; ?>
+                        - <?= e($animal['species_name'] ?? 'N/A') ?> 
+                        <?php if (!empty($animal['breed_name'])): ?>
+                          · <?= e($animal['breed_name']) ?>
+                        <?php endif; ?>
+                        (<?= e($animal['gender'] ?? 'N/A') ?>)
+                      </span>
                     </label>
                   <?php endforeach; ?>
+                </div>
+                <div id="no-animals-message" style="display: none; padding: 1rem; text-align: center; color: var(--gray-600); background: var(--gray-50); border-radius: 8px; margin-top: 0.5rem;">
+                  <i class="fas fa-info-circle"></i> No se encontraron animales con los filtros aplicados.
                 </div>
               </div>
               
@@ -1839,7 +2743,50 @@ if (isset($_GET['edit_user'])) {
               </div>
             </form>
           </div>
-          
+          <?php if ($editLot): ?>
+          <div class="admin-card">
+            <h3><i class="fas fa-edit"></i> Editar Lote: <?= e($editLot['name']) ?> (ID <?= $editLot['id'] ?>)</h3>
+            <p style="color: var(--gray-600);">Remueve animales del conjunto del lote.</p>
+
+            <h4 style="margin-top:1rem;">Animales en el lote (<?= count($editLotAnimals) ?>)</h4>
+            <?php if (empty($editLotAnimals)): ?>
+              <p style="color: var(--gray-600);">No hay animales en este lote.</p>
+            <?php else: ?>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Nombre</th>
+                  <th>Género</th>
+                  <th>Peso</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($editLotAnimals as $ela): ?>
+                <tr>
+                  <td><?= $ela['id'] ?></td>
+                  <td><?= e($ela['name']) ?></td>
+                  <td><?= e($ela['gender'] ?? 'N/A') ?></td>
+                  <td><?= $ela['weight'] ? $ela['weight'] . ' kg' : 'N/A' ?></td>
+                  <td>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('¿Quitar este animal del lote?')">
+                      <input type="hidden" name="action" value="remove_animal_from_lot">
+                      <input type="hidden" name="lot_id" value="<?= $editLot['id'] ?>">
+                      <input type="hidden" name="animal_id" value="<?= $ela['id'] ?>">
+                      <button type="submit" class="btn btn-sm btn-danger">
+                        <i class="fas fa-minus-circle"></i> Quitar
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+            <?php endif; ?>
+          </div>
+          <?php endif; ?>
+
           <div class="admin-card">
             <h3><i class="fas fa-list"></i> Lotes Existentes</h3>
             <table class="data-table">
@@ -1848,7 +2795,6 @@ if (isset($_GET['edit_user'])) {
                   <th>ID</th>
                   <th>Nombre</th>
                   <th>Tipo</th>
-                  <th>Precio Total</th>
                   <th>Animales</th>
                   <th>Estado</th>
                   <th>Finca</th>
@@ -1865,7 +2811,6 @@ if (isset($_GET['edit_user'])) {
                         <?= ucfirst(e($lot['lot_type'])) ?>
                       </span>
                     </td>
-                    <td>$<?= number_format($lot['total_price'], 2) ?></td>
                     <td><?= $lot['actual_animal_count'] ?> animales</td>
                     <td>
                       <span style="background: <?= $lot['status'] == 'disponible' ? 'var(--success)' : ($lot['status'] == 'vendido' ? 'var(--error)' : 'var(--warning)') ?>; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem;">
@@ -1877,9 +2822,9 @@ if (isset($_GET['edit_user'])) {
                       <button class="btn btn-sm btn-secondary" onclick="viewLotDetails(<?= $lot['id'] ?>)">
                         <i class="fas fa-eye"></i> Ver
                       </button>
-                      <button class="btn btn-sm btn-secondary" onclick="editLot(<?= $lot['id'] ?>)">
+                      <a href="admin.php?edit_lot=<?= $lot['id'] ?>" class="btn btn-sm btn-secondary">
                         <i class="fas fa-edit"></i> Editar
-                      </button>
+                      </a>
                       <form method="POST" style="display: inline;" onsubmit="return confirm('¿Estás seguro de eliminar este lote?')">
                         <input type="hidden" name="action" value="delete_lot">
                         <input type="hidden" name="lot_id" value="<?= $lot['id'] ?>">
@@ -1920,8 +2865,8 @@ if (isset($_GET['edit_user'])) {
               <?php endif; ?>
               
               <div class="form-group">
-                <label for="name">Nombre Completo *</label>
-                <input type="text" id="name" name="name" value="<?= e($editUser['name'] ?? '') ?>" required>
+                <label for="user_name">Nombre Completo *</label>
+                <input type="text" id="user_name" name="name" value="<?= e($editUser['name'] ?? '') ?>" required>
               </div>
               
               <div class="form-group">
@@ -1953,8 +2898,8 @@ if (isset($_GET['edit_user'])) {
               </div>
               
               <div class="form-group">
-                <label for="farm_id">Finca</label>
-                <select id="farm_id" name="farm_id">
+                <label for="user_farm_id">Finca</label>
+                <select id="user_farm_id" name="farm_id">
                   <option value="">Sin finca asignada</option>
                   <?php foreach ($farms as $farm): ?>
                     <option value="<?= $farm['id'] ?>" <?= ($editUser['farm_id'] ?? '') == $farm['id'] ? 'selected' : '' ?>>
@@ -2305,6 +3250,193 @@ if (isset($_GET['edit_user'])) {
         </div>
         <?php endif; ?>
 
+        <!-- Quotes Section -->
+        <?php if(is_admin_general()): ?>
+        <div id="quotes-section" class="content-section">
+          <div class="admin-card">
+            <h3>
+              <i class="fas fa-calculator"></i> 
+              Gestión de Cotizaciones
+            </h3>
+            <p>Gestiona las solicitudes de cotización de clientes. Cambia el estado y notifica automáticamente al cliente.</p>
+            
+            <?php if (empty($quotes)): ?>
+            <div style="text-align: center; padding: 3rem; color: var(--gray-500);">
+              <i class="fas fa-inbox" style="font-size: 4rem; margin-bottom: 1rem;"></i>
+              <p>No hay cotizaciones registradas</p>
+            </div>
+            <?php else: ?>
+            <div style="margin-top: 2rem;">
+              <style>
+                .quotes-table-container {
+                  overflow-x: auto;
+                  -webkit-overflow-scrolling: touch;
+                  margin: 0 -1rem;
+                  padding: 0 1rem;
+                }
+                .quotes-table {
+                  width: 100%;
+                  min-width: 1000px;
+                  border-collapse: collapse;
+                  background: white;
+                  border-radius: 8px;
+                  overflow: hidden;
+                  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                .quotes-table th,
+                .quotes-table td {
+                  padding: 0.75rem;
+                  text-align: left;
+                  border-right: 1px solid #f3f4f6;
+                }
+                .quotes-table th {
+                  background: var(--primary-green);
+                  color: white;
+                  border-bottom: 2px solid #1a4720;
+                  font-weight: 600;
+                  white-space: nowrap;
+                }
+                .quotes-table td {
+                  color: var(--gray-700);
+                  font-size: 0.875rem;
+                }
+                .quotes-table tbody tr {
+                  border-bottom: 1px solid #e5e7eb;
+                }
+                .quotes-table tbody tr:hover {
+                  background: #f9fafb;
+                }
+                @media (max-width: 1200px) {
+                  .quotes-table {
+                    min-width: 900px;
+                  }
+                  .quotes-table th,
+                  .quotes-table td {
+                    padding: 0.6rem 0.5rem;
+                    font-size: 0.8125rem;
+                  }
+                }
+                @media (max-width: 768px) {
+                  .quotes-table {
+                    min-width: 800px;
+                  }
+                  .quotes-table th,
+                  .quotes-table td {
+                    padding: 0.5rem 0.4rem;
+                    font-size: 0.75rem;
+                  }
+                }
+                .quote-status-badge {
+                  padding: 0.4rem 0.75rem;
+                  border-radius: 6px;
+                  font-size: 0.75rem;
+                  font-weight: 600;
+                  display: inline-block;
+                  white-space: nowrap;
+                }
+                .quote-type-badge {
+                  padding: 0.3rem 0.6rem;
+                  border-radius: 6px;
+                  font-size: 0.75rem;
+                  font-weight: 600;
+                  display: inline-block;
+                  white-space: nowrap;
+                }
+              </style>
+              <div class="quotes-table-container">
+                <table class="quotes-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Fecha</th>
+                      <th>Tipo</th>
+                      <th>Item</th>
+                      <th>Cliente</th>
+                      <th>Email</th>
+                      <th>Teléfono</th>
+                      <th>Estado</th>
+                      <th style="text-align: center;">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($quotes as $quote): ?>
+                    <tr>
+                      <td style="font-weight: 600; color: var(--gray-700);">
+                        #<?= $quote['id'] ?>
+                      </td>
+                      <td style="font-size: 0.8125rem;">
+                        <?= date('d/m/Y H:i', strtotime($quote['created_at'])) ?>
+                      </td>
+                      <td>
+                        <span class="quote-type-badge" style="
+                          <?php if ($quote['item_type'] === 'animal'): ?>
+                          background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd;
+                          <?php else: ?>
+                          background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;
+                          <?php endif; ?>">
+                          <i class="fas fa-<?= $quote['item_type'] === 'animal' ? 'cow' : 'layer-group' ?>"></i>
+                          <?= $quote['item_type'] === 'animal' ? 'Animal' : 'Lote' ?>
+                        </span>
+                      </td>
+                      <td style="font-weight: 500; color: var(--gray-800); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <?php if ($quote['item_type'] === 'animal'): ?>
+                          <?= e($quote['animal_tag_code'] ?? 'N/A') . ($quote['animal_name'] ? ' - ' . e($quote['animal_name']) : '') ?>
+                        <?php else: ?>
+                          <?= e($quote['lot_name'] ?? 'N/A') ?>
+                        <?php endif; ?>
+                      </td>
+                      <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis;">
+                        <i class="fas fa-user" style="margin-right: 0.5rem; color: var(--gray-400);"></i>
+                        <span style="white-space: nowrap;"><?= e($quote['customer_name']) ?></span>
+                      </td>
+                      <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
+                        <i class="fas fa-envelope" style="margin-right: 0.5rem; color: var(--gray-400);"></i>
+                        <span style="white-space: nowrap;"><?= e($quote['customer_email']) ?></span>
+                      </td>
+                      <td>
+                        <i class="fas fa-phone" style="margin-right: 0.5rem; color: var(--gray-400);"></i>
+                        <?= e($quote['customer_phone']) ?>
+                      </td>
+                      <td>
+                        <span class="quote-status-badge" style="
+                          <?php if ($quote['status'] === 'pendiente'): ?>
+                          background: #fef3c7; color: #92400e; border: 1px solid #fbbf24;
+                          <?php elseif ($quote['status'] === 'en_proceso'): ?>
+                          background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd;
+                          <?php else: ?>
+                          background: #d1fae5; color: #065f46; border: 1px solid #34d399;
+                          <?php endif; ?>">
+                          <i class="fas fa-<?= $quote['status'] === 'pendiente' ? 'clock' : ($quote['status'] === 'en_proceso' ? 'spinner' : 'check-circle') ?>"></i>
+                          <?= ucfirst(str_replace('_', ' ', $quote['status'])) ?>
+                        </span>
+                      </td>
+                      <td style="text-align: center; white-space: nowrap;">
+                        <div style="display: inline-flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;">
+                          <select onchange="updateQuoteStatus(<?= $quote['id'] ?>, this.value)" 
+                                  style="padding: 0.4rem 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.8125rem; cursor: pointer; background: white; min-width: 120px;">
+                            <option value="pendiente" <?= $quote['status'] === 'pendiente' ? 'selected' : '' ?>>Pendiente</option>
+                            <option value="en_proceso" <?= $quote['status'] === 'en_proceso' ? 'selected' : '' ?>>En Proceso</option>
+                            <option value="respondida" <?= $quote['status'] === 'respondida' ? 'selected' : '' ?>>Respondida</option>
+                          </select>
+                          <?php if ($quote['customer_message']): ?>
+                          <button class="btn btn-sm btn-secondary" onclick="showQuoteMessage(<?= $quote['id'] ?>, '<?= addslashes(e($quote['customer_message'])) ?>')" 
+                                  style="border-radius: 6px; padding: 0.4rem 0.6rem;" title="Ver mensaje">
+                            <i class="fas fa-comment"></i>
+                          </button>
+                          <?php endif; ?>
+                        </div>
+                      </td>
+                    </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Farms Section -->
         <?php if(is_admin_general()): ?>
         <div id="farms-section" class="content-section">
@@ -2333,10 +3465,14 @@ if (isset($_GET['edit_user'])) {
             <!-- Farms List -->
             <h4 style="margin-bottom: 1rem;">Fincas Registradas</h4>
             <?php
-            $stmt = $pdo->query("SELECT f.*, COUNT(DISTINCT a.id) as animal_count, COUNT(DISTINCT u.id) as user_count 
+            $stmt = $pdo->query("SELECT f.*, 
+                                 COUNT(DISTINCT a.id) as animal_count, 
+                                 COUNT(DISTINCT u.id) as user_count,
+                                 COUNT(DISTINCT l.id) as lot_count
                                  FROM farms f 
                                  LEFT JOIN animals a ON a.farm_id = f.id 
                                  LEFT JOIN users u ON u.farm_id = f.id
+                                 LEFT JOIN lots l ON l.farm_id = f.id
                                  GROUP BY f.id 
                                  ORDER BY f.name");
             $farms = $stmt->fetchAll();
@@ -2356,6 +3492,7 @@ if (isset($_GET['edit_user'])) {
                       <th>Ubicación</th>
                       <th>Animales</th>
                       <th>Usuarios</th>
+                      <th>Lotes</th>
                       <th>Acciones</th>
                     </tr>
                   </thead>
@@ -2376,10 +3513,15 @@ if (isset($_GET['edit_user'])) {
                           </span>
                         </td>
                         <td>
+                          <span class="badge badge-info">
+                            <i class="fas fa-boxes"></i> <?= e($farm['lot_count']) ?>
+                          </span>
+                        </td>
+                        <td>
                           <button class="btn btn-sm btn-secondary" onclick="editFarm(<?= $farm['id'] ?>, '<?= e($farm['name']) ?>', '<?= e($farm['location'] ?? '') ?>')">
                             <i class="fas fa-edit"></i> Editar
                           </button>
-                          <?php if($farm['animal_count'] == 0 && $farm['user_count'] == 0): ?>
+                          <?php if($farm['animal_count'] == 0 && $farm['user_count'] == 0 && $farm['lot_count'] == 0): ?>
                             <form method="POST" style="display: inline;" onsubmit="return confirm('¿Estás seguro de eliminar esta finca?')">
                               <input type="hidden" name="action" value="delete_farm">
                               <input type="hidden" name="farm_id" value="<?= $farm['id'] ?>">
@@ -2388,9 +3530,13 @@ if (isset($_GET['edit_user'])) {
                               </button>
                             </form>
                           <?php else: ?>
-                            <button class="btn btn-sm btn-danger" disabled title="No se puede eliminar: tiene animales o usuarios asociados">
-                              <i class="fas fa-trash"></i> Eliminar
-                            </button>
+                            <form method="POST" style="display: inline;" onsubmit="return confirm('¿Estás seguro de eliminar esta finca? Los registros asociados (animales, usuarios, lotes) se desasociarán automáticamente.')">
+                              <input type="hidden" name="action" value="delete_farm">
+                              <input type="hidden" name="farm_id" value="<?= $farm['id'] ?>">
+                              <button type="submit" class="btn btn-sm btn-danger" title="Eliminar (se desasociarán <?= e($farm['animal_count'] + $farm['user_count'] + $farm['lot_count']) ?> registro(s) asociado(s))">
+                                <i class="fas fa-trash"></i> Eliminar
+                              </button>
+                            </form>
                           <?php endif; ?>
                         </td>
                       </tr>
@@ -2426,11 +3572,123 @@ if (isset($_GET['edit_user'])) {
         </div>
         <?php endif; ?>
 
+        <!-- Carousel Section -->
+        <?php if(is_admin_general()): ?>
+        <div id="carousel-section" class="content-section">
+          <div class="admin-card">
+            <h3><i class="fas fa-images"></i> Gestión del Carrusel Principal</h3>
+            <p>Gestiona las imágenes del carrusel que se muestra en la página principal (index.php).</p>
+            
+            <!-- Formulario para agregar nueva imagen -->
+            <div style="background: var(--gray-50); padding: 1.5rem; border-radius: 12px; margin-bottom: 2rem;">
+              <h4 style="margin-bottom: 1rem;"><i class="fas fa-plus-circle"></i> Agregar Nueva Imagen</h4>
+              <form method="POST" enctype="multipart/form-data" class="grid grid-2">
+                <input type="hidden" name="action" value="add_carousel_image">
+                
+                <div class="form-group" style="grid-column: 1 / -1;">
+                  <label for="carousel_image">Imagen *</label>
+                  <input type="file" id="carousel_image" name="carousel_image" accept="image/*" required>
+                  <small style="color: var(--gray-600);">Formatos permitidos: JPG, PNG, GIF, WEBP. Máximo 10MB</small>
+                </div>
+                
+                <div class="form-group">
+                  <label for="carousel_title">Título</label>
+                  <input type="text" id="carousel_title" name="title" placeholder="Ej: Holstein Premium en Venta">
+                </div>
+                
+                <div class="form-group">
+                  <label for="carousel_sort_order">Orden</label>
+                  <input type="number" id="carousel_sort_order" name="sort_order" value="0" min="0">
+                  <small style="color: var(--gray-600);">Menor número = aparece primero</small>
+                </div>
+                
+                <div class="form-group" style="grid-column: 1 / -1;">
+                  <label for="carousel_description">Descripción</label>
+                  <textarea id="carousel_description" name="description" rows="3" placeholder="Ej: Exemplares certificados disponibles en nuestro catálogo"></textarea>
+                </div>
+                
+                <div style="grid-column: 1 / -1;">
+                  <button type="submit" class="btn"><i class="fas fa-upload"></i> Subir Imagen</button>
+                </div>
+              </form>
+            </div>
+            
+            <!-- Lista de imágenes existentes -->
+            <h4 style="margin-bottom: 1rem;"><i class="fas fa-list"></i> Imágenes del Carrusel</h4>
+            <?php if (empty($carousel_images)): ?>
+            <div style="text-align: center; padding: 3rem; color: var(--gray-500);">
+              <i class="fas fa-images" style="font-size: 4rem; margin-bottom: 1rem;"></i>
+              <p>No hay imágenes en el carrusel. Agrega la primera imagen arriba.</p>
+            </div>
+            <?php else: ?>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem;">
+              <?php foreach ($carousel_images as $img): ?>
+              <div style="background: white; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="position: relative; width: 100%; height: 200px; overflow: hidden; background: #f3f4f6;">
+                  <img src="<?= e($img['file_path']) ?>" alt="<?= e($img['title'] ?? 'Imagen del carrusel') ?>" 
+                       style="width: 100%; height: 100%; object-fit: cover;">
+                  <?php if (!$img['is_active']): ?>
+                  <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;">
+                    <span style="background: #ef4444; color: white; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600;">INACTIVA</span>
+                  </div>
+                  <?php endif; ?>
+                </div>
+                <div style="padding: 1rem;">
+                  <form method="POST" style="margin-bottom: 0.5rem;">
+                    <input type="hidden" name="action" value="update_carousel_image">
+                    <input type="hidden" name="image_id" value="<?= $img['id'] ?>">
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                      <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem;">Título</label>
+                      <input type="text" name="title" value="<?= e($img['title'] ?? '') ?>" 
+                             style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.875rem;">
+                    </div>
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                      <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem;">Descripción</label>
+                      <textarea name="description" rows="2" 
+                                style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.875rem; resize: vertical;"><?= e($img['description'] ?? '') ?></textarea>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.75rem;">
+                      <div>
+                        <label style="display: block; font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem;">Orden</label>
+                        <input type="number" name="sort_order" value="<?= $img['sort_order'] ?>" min="0"
+                               style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; font-size: 0.875rem;">
+                      </div>
+                      <div style="display: flex; align-items: end;">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; background: <?= $img['is_active'] ? '#d1fae5' : '#fee2e2' ?>; width: 100%;">
+                          <input type="checkbox" name="is_active" <?= $img['is_active'] ? 'checked' : '' ?> style="margin: 0;">
+                          <span style="font-size: 0.875rem; font-weight: 600;"><?= $img['is_active'] ? 'Activa' : 'Inactiva' ?></span>
+                        </label>
+                      </div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 0.5rem;">
+                      <button type="submit" class="btn btn-sm" style="flex: 1;">
+                        <i class="fas fa-save"></i> Guardar
+                      </button>
+                      <button type="button" class="btn btn-sm btn-danger" 
+                              onclick="if(confirm('¿Estás seguro de eliminar esta imagen?')) { const form = document.createElement('form'); form.method = 'POST'; form.innerHTML = '<input type=\'hidden\' name=\'action\' value=\'delete_carousel_image\'><input type=\'hidden\' name=\'image_id\' value=\'<?= $img['id'] ?>\'>'; document.body.appendChild(form); form.submit(); }"
+                              style="flex: 1;">
+                        <i class="fas fa-trash"></i> Eliminar
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+              <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+          </div>
+        </div>
+        <?php endif; ?>
+
         <!-- Settings Section -->
         <div id="settings-section" class="content-section">
           <div class="admin-card">
             <h3><i class="fas fa-cog"></i> Configuración del Sistema</h3>
-            <p>Configuración general del sistema AgroGan.</p>
+            <p>Configuración general del sistema Rc El Bosque.</p>
             
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 2rem;">
               <div style="background: var(--gray-50); padding: 1.5rem; border-radius: 12px;">
@@ -2456,6 +3714,43 @@ if (isset($_GET['edit_user'])) {
                   <i class="fas fa-cog"></i> Configurar
                 </button>
               </div>
+
+              <?php if (is_admin_general()): ?>
+              <div style="background: var(--gray-50); padding: 1.5rem; border-radius: 12px;">
+                <h4><i class="fas fa-layer-group"></i> Tipos de Lote</h4>
+                <p style="color: var(--gray-600); margin-bottom: 1rem;">Gestiona los tipos disponibles para crear lotes</p>
+                <form method="POST" class="form-grid" style="grid-template-columns: 1fr auto; gap: 0.75rem; align-items: end;">
+                  <input type="hidden" name="action" value="add_lot_type">
+                  <label>Nuevo tipo
+                    <input name="name" placeholder="p.ej. mejoramiento" required>
+                  </label>
+                  <button class="btn btn-sm" type="submit"><i class="fas fa-plus"></i> Agregar</button>
+                </form>
+                <div style="margin-top: 1rem;">
+                  <?php if (!empty($lotTypes)): ?>
+                  <table class="data-table">
+                    <thead><tr><th>Tipo</th><th style="width:120px">Acciones</th></tr></thead>
+                    <tbody>
+                      <?php foreach ($lotTypes as $t): ?>
+                        <tr>
+                          <td><?= e(ucfirst($t)) ?></td>
+                          <td>
+                            <form method="POST" style="display:inline" onsubmit="return confirm('¿Eliminar tipo de lote?')">
+                              <input type="hidden" name="action" value="delete_lot_type">
+                              <input type="hidden" name="name" value="<?= e($t) ?>">
+                              <button class="btn btn-sm btn-danger"><i class="fas fa-trash"></i> Eliminar</button>
+                            </form>
+                          </td>
+                        </tr>
+                      <?php endforeach; ?>
+                    </tbody>
+                  </table>
+                  <?php else: ?>
+                    <p style="color: var(--gray-600);">No hay tipos definidos.</p>
+                  <?php endif; ?>
+                </div>
+              </div>
+              <?php endif; ?>
             </div>
           </div>
         </div>
@@ -2503,8 +3798,10 @@ if (isset($_GET['edit_user'])) {
         'users': 'Usuarios',
         'farms': 'Gestión de Fincas',
         'nominations': 'Postulaciones',
+        'quotes': 'Cotizaciones',
         'veterinary': 'Módulo Veterinario',
         'reports': 'Reportes',
+        'carousel': 'Carrusel Principal',
         'settings': 'Configuración'
       };
       document.getElementById('section-title').textContent = titles[sectionName] || 'Panel Administrativo';
@@ -2574,25 +3871,7 @@ if (isset($_GET['edit_user'])) {
       }
     }
 
-    function toggleAnimalsWithPrice() {
-      if (confirm('¿Mostrar solo los animales que tienen precio asignado?')) {
-        const checkboxes = document.querySelectorAll('.animal-checkbox');
-        const rows = document.querySelectorAll('tbody tr');
-        
-        // Uncheck all first
-        checkboxes.forEach(checkbox => checkbox.checked = false);
-        document.getElementById('select-all').checked = false;
-        
-        // Check only animals with price
-        rows.forEach((row, index) => {
-          const priceCell = row.cells[7]; // Price column
-          if (priceCell && !priceCell.textContent.includes('Sin precio')) {
-            const checkbox = row.querySelector('.animal-checkbox');
-            if (checkbox) checkbox.checked = true;
-          }
-        });
-      }
-    }
+    
 
     function bulkToggleVisibility(visibility) {
       const checkedBoxes = document.querySelectorAll('.animal-checkbox:checked');
@@ -2661,6 +3940,27 @@ if (isset($_GET['edit_user'])) {
       }
     }
 
+    function updateQuoteStatus(quoteId, newStatus) {
+      if (confirm('¿Estás seguro de cambiar el estado de esta cotización? Se enviará un correo de notificación al cliente.')) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.innerHTML = `
+          <input type="hidden" name="action" value="update_quote_status">
+          <input type="hidden" name="quote_id" value="${quoteId}">
+          <input type="hidden" name="new_status" value="${newStatus}">
+        `;
+        document.body.appendChild(form);
+        form.submit();
+      } else {
+        // Restaurar el valor anterior del select
+        location.reload();
+      }
+    }
+
+    function showQuoteMessage(quoteId, message) {
+      alert('Mensaje del Cliente (Cotización #' + quoteId + '):\n\n' + message);
+    }
+
     function viewNominationDetails(nominationId) {
       alert('Ver detalles de la postulación ' + nominationId);
     }
@@ -2690,13 +3990,202 @@ if (isset($_GET['edit_user'])) {
       }
     });
 
+    // Validación de código de animal en tiempo real
+    function validateTagCode(input) {
+      const tagCode = input.value.trim();
+      const errorElement = document.getElementById('tag-code-error');
+      
+      if (tagCode === '') {
+        errorElement.textContent = 'El código de animal es obligatorio.';
+        errorElement.style.display = 'block';
+        input.style.borderColor = 'var(--danger)';
+        return false;
+      }
+      
+      if (tagCode.length > 80) {
+        errorElement.textContent = 'El código no puede tener más de 80 caracteres.';
+        errorElement.style.display = 'block';
+        input.style.borderColor = 'var(--danger)';
+        return false;
+      }
+      
+      // Código válido
+      errorElement.style.display = 'none';
+      input.style.borderColor = 'var(--success)';
+      return true;
+    }
+    
+    // Validación de peso en tiempo real
+    function validateWeight(input) {
+      const weight = parseFloat(input.value);
+      const errorElement = document.getElementById('weight-error');
+      
+      if (input.value === '' || input.value === null) {
+        // Si está vacío, está bien (es opcional)
+        errorElement.style.display = 'none';
+        input.style.borderColor = '';
+        return true;
+      }
+      
+      if (isNaN(weight)) {
+        errorElement.textContent = 'Por favor ingresa un número válido.';
+        errorElement.style.display = 'block';
+        input.style.borderColor = 'var(--danger)';
+        return false;
+      }
+      
+      if (weight < 20) {
+        errorElement.textContent = 'El peso mínimo es 20 kg.';
+        errorElement.style.display = 'block';
+        input.style.borderColor = 'var(--danger)';
+        return false;
+      }
+      
+      if (weight > 1000) {
+        errorElement.textContent = 'El peso máximo es 1000 kg.';
+        errorElement.style.display = 'block';
+        input.style.borderColor = 'var(--danger)';
+        return false;
+      }
+      
+      // Peso válido
+      errorElement.style.display = 'none';
+      input.style.borderColor = 'var(--success)';
+      return true;
+    }
+    
     // Auto-open animals section if editing an animal
     window.addEventListener('DOMContentLoaded', function() {
       const urlParams = new URLSearchParams(window.location.search);
       if (urlParams.get('edit_animal')) {
         showSection('animals');
       }
+      // Inicializar contador de animales al cargar la página
+      updateAnimalCount();
+      
+      // Validar formulario antes de enviar
+      const animalForm = document.querySelector('form[method="POST"]');
+      if (animalForm) {
+        animalForm.addEventListener('submit', function(e) {
+          let isValid = true;
+          let firstErrorField = null;
+          
+          // Validar código de animal
+          const tagCodeInput = document.getElementById('tag_code');
+          if (tagCodeInput && !validateTagCode(tagCodeInput)) {
+            isValid = false;
+            if (!firstErrorField) firstErrorField = tagCodeInput;
+          }
+          
+          // Validar peso si existe
+          const weightInput = document.getElementById('weight');
+          if (weightInput && !validateWeight(weightInput)) {
+            isValid = false;
+            if (!firstErrorField) firstErrorField = weightInput;
+          }
+          
+          if (!isValid) {
+            e.preventDefault();
+            if (firstErrorField) firstErrorField.focus();
+            return false;
+          }
+        });
+      }
     });
+
+    // Actualizar contador de animales seleccionados en el formulario de lotes
+    function updateAnimalCount() {
+      // Contar solo los checkboxes marcados (visibles o no)
+      const checkboxes = document.querySelectorAll('.lot-animal-checkbox:checked');
+      const count = checkboxes.length;
+      const countElement = document.getElementById('selected-animals-count');
+      const labelElement = document.getElementById('selected-animals-label');
+      
+      if (countElement) {
+        countElement.textContent = count;
+      }
+      
+      if (labelElement) {
+        labelElement.textContent = count === 1 ? 'animal seleccionado' : 'animales seleccionados';
+      }
+    }
+
+    // Filtrar animales según búsqueda y filtros
+    function filterAnimals() {
+      const searchTerm = document.getElementById('animal-search').value.toLowerCase().trim();
+      const filterSpecies = document.getElementById('filter-species').value.toLowerCase();
+      const filterBreed = document.getElementById('filter-breed').value.toLowerCase();
+      const filterGender = document.getElementById('filter-gender').value.toLowerCase();
+      
+      const animalItems = document.querySelectorAll('.animal-item');
+      let visibleCount = 0;
+      
+      animalItems.forEach(item => {
+        const name = item.getAttribute('data-name') || '';
+        const tagCode = item.getAttribute('data-tag-code') || '';
+        const species = item.getAttribute('data-species') || '';
+        const breed = item.getAttribute('data-breed') || '';
+        const gender = item.getAttribute('data-gender') || '';
+        
+        // Combinar nombre y tag code para búsqueda
+        const searchableText = name + ' ' + tagCode + ' ' + species + ' ' + breed;
+        
+        // Aplicar filtros
+        const matchesSearch = !searchTerm || searchableText.includes(searchTerm);
+        const matchesSpecies = !filterSpecies || species === filterSpecies;
+        const matchesBreed = !filterBreed || breed === filterBreed;
+        const matchesGender = !filterGender || gender === filterGender;
+        
+        if (matchesSearch && matchesSpecies && matchesBreed && matchesGender) {
+          item.style.display = 'block';
+          item.style.background = '';
+          visibleCount++;
+        } else {
+          item.style.display = 'none';
+        }
+      });
+      
+      // Mostrar/ocultar mensaje de "no encontrados"
+      const noAnimalsMsg = document.getElementById('no-animals-message');
+      if (noAnimalsMsg) {
+        noAnimalsMsg.style.display = visibleCount === 0 ? 'block' : 'none';
+      }
+      
+      // Actualizar contador después de filtrar
+      updateAnimalCount();
+    }
+
+    // Limpiar todos los filtros
+    function clearAnimalFilters() {
+      document.getElementById('animal-search').value = '';
+      document.getElementById('filter-species').value = '';
+      document.getElementById('filter-breed').value = '';
+      document.getElementById('filter-gender').value = '';
+      filterAnimals();
+    }
+    
+    // Mostrar logs del servidor en la consola del navegador
+    <?php if (!empty($browser_logs)): ?>
+    console.group('📧 Logs del Sistema de Correo');
+    <?php foreach ($browser_logs as $log): ?>
+      <?php
+      $type = $log['type'] ?? 'info';
+      $message = addslashes($log['message']);
+      $timestamp = $log['timestamp'] ?? '';
+      
+      if ($type === 'error') {
+        echo "console.error('❌ [$timestamp] $message');";
+      } elseif ($type === 'success') {
+        echo "console.log('%c✅ [$timestamp] $message', 'color: green; font-weight: bold');";
+      } elseif ($type === 'warning') {
+        echo "console.warn('⚠️ [$timestamp] $message');";
+      } else {
+        echo "console.log('📧 [$timestamp] $message');";
+      }
+      ?>
+    <?php endforeach; ?>
+    console.groupEnd();
+    <?php endif; ?>
   </script>
 </body>
 </html>

@@ -1,0 +1,19 @@
+# Redirección principal para rcelbosque.com
+# Este archivo va en la raíz de public_html/
+
+# Redirigir a /public/ si acceden a la raíz
+RewriteEngine On
+RewriteCond %{REQUEST_URI} !^/public/
+RewriteCond %{REQUEST_URI} !^/\.well-known/
+RewriteRule ^(.*)$ /public/$1 [L,R=301]
+
+# Proteger archivos sensibles
+<FilesMatch "^(config\.php|config\.production\.php|config\.hostinger\.php|\.htaccess|\.git|README\.md|INSTALLATION\.md|switch_to.*\.php|.*\.sql|.*\.backup.*)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Ocultar errores en producción
+php_flag display_errors off
+php_flag log_errors on
+

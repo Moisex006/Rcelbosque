@@ -1,5 +1,5 @@
 
-# Documento Técnico - AgroGan
+# Documento Técnico - Rc El Bosque
 
 (Ver también README para uso básico)
 

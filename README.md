@@ -1,10 +1,12 @@
-# AgroGan - Sistema de Gestión Ganadera
+# Rc El Bosque - Sistema de Gestión Ganadera
 
 Sistema web completo para la gestión integral de ganadería, desarrollado con PHP y MySQL, que permite administrar animales, lotes, veterinaria, usuarios y catálogo de ventas.
 
+🌐 **Sitio Web:** [https://rcelbosque.com](https://rcelbosque.com)
+
 ## 📋 Descripción
 
-AgroGan es una aplicación web que facilita la gestión de operaciones ganaderas, incluyendo:
+Rc El Bosque es una aplicación web que facilita la gestión de operaciones ganaderas, incluyendo:
 
 - **Gestión de Animales**: Registro, edición y seguimiento individual de cada animal
 - **Gestión de Fincas**: Administración de las fincas asociadas al sistema
@@ -44,6 +46,7 @@ AgroGan es una aplicación web que facilita la gestión de operaciones ganaderas
 - **Estilos**: CSS personalizado con variables CSS
 - **Iconos**: Font Awesome
 - **Seguridad**: reCAPTCHA v3
+- **Hosting**: Compatible con XAMPP (desarrollo) y Hostinger (producción)
 - **Servidor Web**: Apache (XAMPP)
 
 ## 📁 Estructura del Proyecto
@@ -55,7 +58,7 @@ Rcelbosque/
 │   └── recaptcha.php        # Verificación de reCAPTCHA
 ├── backend/
 │   ├── db/
-│   │   ├── agrogan.sqlite   # Base de datos SQLite para desarrollo
+│   │   ├── rcelbosque.sqlite   # Base de datos SQLite para desarrollo
 │   │   ├── db.js            # Configuración de SQLite
 │   │   └── schema.sql       # Esquema de base de datos
 │   ├── routes/              # Rutas API Node.js (veterinaria)
@@ -71,7 +74,7 @@ Rcelbosque/
 │   ├── login.php            # Inicio de sesión
 │   ├── register.php         # Registro de usuarios
 │   └── get-animal-details.php  # API para detalles de animales
-└── agrogan.sql              # Esquema completo de MySQL
+└── rcelbosque.sql              # Esquema completo de MySQL
 ```
 
 ## 📖 Documentación Adicional
@@ -84,11 +87,12 @@ Rcelbosque/
 ## 🚀 Instalación Rápida
 
 ### Requisitos Previos
-- XAMPP (con PHP 8.0+ y MySQL 5.7+)
+- XAMPP (con PHP 8.0+ y MySQL 5.7+) para desarrollo local
+- O Hostinger/hosting compatible para producción
 - Navegador web moderno
 - Opcional: Node.js para desarrollo del módulo backend
 
-### Pasos de Instalación
+### Instalación Local (XAMPP)
 
 1. **Clonar o copiar el proyecto**
    ```bash
@@ -100,8 +104,8 @@ Rcelbosque/
 
 2. **Crear la base de datos**
    - Abrir phpMyAdmin (http://localhost/phpmyadmin)
-   - Crear una nueva base de datos llamada `agrogan`
-   - Importar el archivo `agrogan.sql`
+   - Crear una nueva base de datos llamada `rcelbosque`
+   - Importar el archivo `rcelbosque.sql`
 
 3. **Configurar la conexión**
    - Verificar las credenciales en `app/config.php`
@@ -113,6 +117,23 @@ Rcelbosque/
 5. **Acceder al sistema**
    - Abrir: http://localhost/Rcelbosque/public/
 
+### Instalación en Hostinger (Producción)
+
+**🌐 Dominio:** [rcelbosque.com](https://rcelbosque.com)
+
+**Guías disponibles:**
+- **[QUICK_START_HOSTINGER.md](QUICK_START_HOSTINGER.md)** ⚡ - Inicio rápido (5 minutos)
+- **[GUIA_SUBIDA_HOSTINGER.md](GUIA_SUBIDA_HOSTINGER.md)** 📚 - Guía completa paso a paso
+- **[HOSTINGER_SETUP.md](HOSTINGER_SETUP.md)** ⚙️ - Configuración de base de datos
+
+**Resumen rápido:**
+1. Ejecutar: `php switch_to_hostinger.php` (cambia configuración a Hostinger)
+2. Subir archivos a `public_html/` en Hostinger (File Manager o FTP)
+3. Importar `rcelbosque.sql` en phpMyAdmin de Hostinger
+4. Verificar con `public/verificar_despliegue.php`
+5. Crear usuario administrador
+6. Eliminar archivos de prueba después de verificar
+
 ## 🔐 Credenciales Iniciales
 
 Por defecto, el sistema no incluye usuarios. Debes crear el primer usuario administrador.
@@ -123,7 +144,7 @@ Ejecutar en phpMyAdmin o desde línea de comandos:
 
 ```sql
 INSERT INTO users (name, email, password_hash, role) 
-VALUES ('Administrador', 'admin@agrogan.local', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin_general');
+VALUES ('Administrador', 'admin@rcelbosque.local', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin_general');
 ```
 
 O registrarse normalmente y actualizar el rol manualmente en la base de datos.
@@ -160,7 +181,7 @@ O registrarse normalmente y actualizar el rol manualmente en la base de datos.
 ### Error de conexión a base de datos
 - Verificar que MySQL está corriendo
 - Revisar credenciales en `app/config.php`
-- Verificar que la base de datos `agrogan` existe
+- Verificar que la base de datos `rcelbosque` existe
 
 ### reCAPTCHA no funciona
 - Verificar que se ha configurado el sitio en Google reCAPTCHA
